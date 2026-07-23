@@ -1,0 +1,300 @@
+package com.vibelex.recognition.application;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vibelex.candidatediscovery.domain.NormalizationProfile;
+import com.vibelex.candidatediscovery.domain.TermNormalizer;
+import com.vibelex.recognition.application.RecognitionIndex.*;
+import jakarta.validation.constraints.NotBlank;
+import java.time.Instant;
+import java.util.*;
+import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+/**
+ * 规则识别流水线 V1.1。
+ *
+ * <p>依次执行归一化视图召回、上下文计分、义项消歧、重叠消解、策略过滤和阈值裁剪。 输出 offset 始终是原始文本的 Unicode 码点半开区间。
+ */
+@Service
+public class RecognitionService {
+  private final RecognitionIndex index;
+  private final TermNormalizer normalizer;
+  private final ObjectMapper mapper;
+
+  public RecognitionService(
+      RecognitionIndex index, TermNormalizer normalizer, ObjectMapper mapper) {
+    this.index = index;
+    this.normalizer = normalizer;
+    this.mapper = mapper;
+  }
+
+  public record Options(
+      @JsonProperty("min_confidence") Double minConfidence,
+      @JsonProperty("max_results") Integer maxResults) {}
+
+  public record Request(
+      @NotBlank String text,
+      @JsonProperty("language_code") String languageCode,
+      String scene,
+      Options options) {}
+
+  public Map<String, Object> recognize(Request request) {
+    String language = request.languageCode() == null ? "zh-CN" : request.languageCode();
+    double min =
+        request.options() == null || request.options().minConfidence() == null
+            ? .6
+            : request.options().minConfidence();
+    int max =
+        request.options() == null || request.options().maxResults() == null
+            ? 20
+            : request.options().maxResults();
+    if (min < 0 || min > 1 || max < 1 || max > 200)
+      throw new IllegalArgumentException("min_confidence 必须为 0..1，max_results 必须为 1..200");
+    Data data = index.get();
+    Map<NormalizationProfile, NormalizedView> views = new EnumMap<>(NormalizationProfile.class);
+    for (NormalizationProfile p : NormalizationProfile.values())
+      views.put(p, NormalizedView.of(request.text(), language, p, normalizer));
+    List<Raw> raw = new ArrayList<>();
+    for (Anchor a : data.anchors()) {
+      Entry e = data.entries().get(a.memeId());
+      if (e == null || !e.language().equals(language)) continue;
+      if (a.profile() == null)
+        findRaw(request.text(), a.value())
+            .forEach(
+                x ->
+                    raw.add(
+                        new Raw(
+                            a.memeId(),
+                            a.senseId(),
+                            cpCount(request.text(), x[0]),
+                            cpCount(request.text(), x[1]),
+                            a.source())));
+      else {
+        NormalizedView v = views.get(a.profile());
+        findRaw(v.text, a.value())
+            .forEach(
+                x -> {
+                  NormalizedView.Span s = v.span(x[0], x[1]);
+                  raw.add(new Raw(a.memeId(), a.senseId(), s.start(), s.end(), a.source()));
+                });
+      }
+    }
+    for (var en : data.rules().entrySet())
+      for (Rule r : en.getValue())
+        if ("regex_match".equals(r.type())) {
+          try {
+            var m = Pattern.compile(r.value()).matcher(request.text());
+            while (m.find())
+              raw.add(
+                  new Raw(
+                      en.getKey(),
+                      r.senseId(),
+                      cpCount(request.text(), m.start()),
+                      cpCount(request.text(), m.end()),
+                      "rule:regex_match"));
+          } catch (RuntimeException ignored) {
+          }
+        }
+    Map<String, Raw> dedup = new LinkedHashMap<>();
+    raw.forEach(
+        r -> dedup.putIfAbsent(r.memeId + ":" + r.senseId + ":" + r.start + ":" + r.end, r));
+    List<Scored> scored = new ArrayList<>();
+    for (Raw r : dedup.values()) score(r, request.text(), data).forEach(scored::add);
+    List<Scored> disambiguated = disambiguate(scored);
+    List<Scored> resolved = resolveOverlaps(disambiguated);
+    List<Map<String, Object>> matches =
+        resolved.stream()
+            .filter(x -> x.confidence >= min)
+            .sorted(
+                Comparator.comparingDouble(Scored::confidence)
+                    .reversed()
+                    .thenComparingInt(Scored::start))
+            .limit(max)
+            .map(x -> output(x, request.text(), data))
+            .toList();
+    return Map.of(
+        "matches", matches, "engine_version", "1.1", "processed_at", Instant.now().toString());
+  }
+
+  private List<Scored> score(Raw raw, String text, Data data) {
+    List<Sense> senses =
+        raw.senseId == null
+            ? data.senses().getOrDefault(raw.memeId, List.of())
+            : data.senses().getOrDefault(raw.memeId, List.of()).stream()
+                .filter(s -> s.id() == raw.senseId)
+                .toList();
+    if (senses.isEmpty()) senses = Collections.singletonList(null);
+    List<Scored> out = new ArrayList<>();
+    for (Sense sense : senses) {
+      double score = 1.2;
+      List<String> reasons = new ArrayList<>();
+      reasons.add(
+          raw.source.contains("normalized") || raw.source.equals("variant")
+              ? "normalized_match"
+              : raw.source.replace("rule:", ""));
+      int senseHits = 0, minPriority = 100;
+      boolean veto = false;
+      for (Rule rule : data.rules().getOrDefault(raw.memeId, List.of())) {
+        if (rule.senseId() != null && (sense == null || rule.senseId() != sense.id())) continue;
+        minPriority = Math.min(minPriority, rule.priority());
+        if (Set.of("positive_context", "negative_context", "entity_exclusion").contains(rule.type())
+            && contextHit(text, raw, rule)) {
+          if ("entity_exclusion".equals(rule.type()) && Math.abs(rule.weight()) >= 1) {
+            veto = true;
+            break;
+          }
+          score += rule.weight();
+          reasons.add(rule.type());
+          if (rule.senseId() != null) senseHits++;
+        }
+      }
+      out.add(
+          new Scored(
+              raw.memeId,
+              sense == null ? null : sense.id(),
+              sense == null ? null : sense.no(),
+              raw.start,
+              raw.end,
+              veto ? 0 : Math.max(0, Math.min(1, score / 2)),
+              reasons,
+              senseHits,
+              minPriority,
+              false));
+    }
+    return out;
+  }
+
+  private boolean contextHit(String text, Raw raw, Rule rule) {
+    int window = 20;
+    try {
+      JsonNode c = rule.config() == null ? null : mapper.readTree(rule.config());
+      if (c != null && c.has("window")) window = c.get("window").asInt(20);
+    } catch (Exception ignored) {
+    }
+    int[] u =
+        cpWindow(
+            text,
+            Math.max(0, raw.start - window),
+            Math.min(text.codePointCount(0, text.length()), raw.end + window));
+    String context = text.substring(u[0], u[1]);
+    String normalized = normalizer.normalize(context, "zh-CN");
+    for (String key : rule.value().split("[,，|]")) {
+      if (normalized.contains(normalizer.normalize(key.trim(), "zh-CN"))) return true;
+    }
+    return false;
+  }
+
+  private List<Scored> disambiguate(List<Scored> input) {
+    Map<String, List<Scored>> groups = new LinkedHashMap<>();
+    input.forEach(
+        x ->
+            groups
+                .computeIfAbsent(x.memeId + ":" + x.start + ":" + x.end, k -> new ArrayList<>())
+                .add(x));
+    List<Scored> out = new ArrayList<>();
+    for (List<Scored> g : groups.values()) {
+      g.sort(
+          Comparator.comparingDouble(Scored::confidence)
+              .reversed()
+              .thenComparing(Comparator.comparingInt(Scored::senseHits).reversed()));
+      Scored best = g.get(0);
+      if (g.size() > 1
+          && best.confidence == g.get(1).confidence
+          && best.senseHits == g.get(1).senseHits)
+        best =
+            new Scored(
+                best.memeId,
+                null,
+                null,
+                best.start,
+                best.end,
+                best.confidence,
+                best.reasons,
+                best.senseHits,
+                best.priority,
+                true);
+      out.add(best);
+    }
+    return out;
+  }
+
+  private List<Scored> resolveOverlaps(List<Scored> input) {
+    input.sort(
+        Comparator.comparingDouble(Scored::confidence)
+            .reversed()
+            .thenComparing(Comparator.comparingInt((Scored x) -> x.end - x.start).reversed())
+            .thenComparingInt(Scored::priority)
+            .thenComparingLong(Scored::memeId));
+    List<Scored> out = new ArrayList<>();
+    outer:
+    for (Scored c : input) {
+      for (Scored k : out)
+        if (c.start < k.end && k.start < c.end) {
+          boolean nested =
+              (c.start >= k.start && c.end <= k.end) || (k.start >= c.start && k.end <= c.end);
+          if (!(nested && Math.abs(c.confidence - k.confidence) >= .2)) continue outer;
+        }
+      out.add(c);
+    }
+    return out;
+  }
+
+  private Map<String, Object> output(Scored x, String text, Data data) {
+    Entry e = data.entries().get(x.memeId);
+    Map<String, Object> p = new LinkedHashMap<>();
+    p.put("detect_enabled", e.detect());
+    p.put("display_enabled", e.display());
+    p.put("generate_enabled", e.generate());
+    p.put("recommend_enabled", e.status().equals("archived") ? false : e.recommend());
+    p.put("risk_level", e.risk());
+    p.put("moderation_policy", e.moderation());
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("meme_id", e.id());
+    m.put("meme_code", e.code());
+    m.put("canonical_term", e.term());
+    m.put("sense_id", x.senseId);
+    m.put("sense_no", x.senseNo);
+    m.put("ambiguous", x.ambiguous);
+    int[] range = cpWindow(text, x.start, x.end);
+    m.put("matched_text", text.substring(range[0], range[1]));
+    m.put("start_offset", x.start);
+    m.put("end_offset", x.end);
+    m.put("confidence", Math.round(x.confidence * 10000d) / 10000d);
+    m.put("match_reason", x.reasons);
+    m.put("policy", p);
+    return m;
+  }
+
+  private List<int[]> findRaw(String text, String pattern) {
+    List<int[]> r = new ArrayList<>();
+    if (pattern == null || pattern.isEmpty()) return r;
+    for (int from = 0;
+        (from = text.indexOf(pattern, from)) >= 0;
+        from += Math.max(1, pattern.length())) r.add(new int[] {from, from + pattern.length()});
+    return r;
+  }
+
+  private int cpCount(String s, int utf16) {
+    return s.codePointCount(0, utf16);
+  }
+
+  private int[] cpWindow(String s, int start, int end) {
+    return new int[] {s.offsetByCodePoints(0, start), s.offsetByCodePoints(0, end)};
+  }
+
+  private record Raw(long memeId, Long senseId, int start, int end, String source) {}
+
+  private record Scored(
+      long memeId,
+      Long senseId,
+      Integer senseNo,
+      int start,
+      int end,
+      double confidence,
+      List<String> reasons,
+      int senseHits,
+      int priority,
+      boolean ambiguous) {}
+}

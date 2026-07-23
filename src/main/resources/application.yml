@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: vibelex
+  datasource:
+    url: jdbc:mysql://localhost:3306/vibelex_db
+    username: root
+    password: wjn2021$
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    default-property-inclusion: non_null
+server:
+  port: 8080
+vibelex:
+  actors: editor01,reviewer01,admin01,system
+  default-actor: system
+  data-directory: data
+  import:
+    max-file-bytes: 52428800
+  llm:
+    scenarios:
+      variant-generation:
+        # 仅控制候选词条批准时的自动生成；页面中的手动生成功能始终可用。
+        enabled: false
+        base-url: https://ark.cn-beijing.volces.com/api/v3
+        api-key: fe4f4cd4-39f2-4908-ab5f-d5220159242b
+        model: doubao-seed-2-0-lite-260428
+        prompt: classpath:prompts/variant-generation.md
+        temperature: 0.2
+        web-search-max-keyword: 2
+        request-timeout-seconds: 90
