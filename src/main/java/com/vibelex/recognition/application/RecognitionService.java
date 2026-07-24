@@ -40,7 +40,18 @@ public class RecognitionService {
       String scene,
       Options options) {}
 
+  /**
+   * An anchored candidate supplied by another recall path. Offsets use the same Unicode code point
+   * convention as the public recognition API. Candidates still go through the V1 scoring,
+   * disambiguation, overlap and policy pipeline.
+   */
+  public record Candidate(long memeId, Long senseId, int startOffset, int endOffset, String source) {}
+
   public Map<String, Object> recognize(Request request) {
+    return recognizeWithCandidates(request, List.of());
+  }
+
+  public Map<String, Object> recognizeWithCandidates(Request request, List<Candidate> candidates) {
     String language = request.languageCode() == null ? "zh-CN" : request.languageCode();
     double min =
         request.options() == null || request.options().minConfidence() == null
@@ -70,14 +81,14 @@ public class RecognitionService {
                             a.senseId(),
                             cpCount(request.text(), x[0]),
                             cpCount(request.text(), x[1]),
-                            a.source())));
+                            Set.of(a.source()))));
       else {
         NormalizedView v = views.get(a.profile());
         findRaw(v.text, a.value())
             .forEach(
                 x -> {
                   NormalizedView.Span s = v.span(x[0], x[1]);
-                  raw.add(new Raw(a.memeId(), a.senseId(), s.start(), s.end(), a.source()));
+                  raw.add(new Raw(a.memeId(), a.senseId(), s.start(), s.end(), Set.of(a.source())));
                 });
       }
     }
@@ -93,13 +104,27 @@ public class RecognitionService {
                       r.senseId(),
                       cpCount(request.text(), m.start()),
                       cpCount(request.text(), m.end()),
-                      "rule:regex_match"));
+                      Set.of("rule:regex_match")));
           } catch (RuntimeException ignored) {
           }
         }
+    for (Candidate candidate : candidates) {
+      if (candidate.startOffset() < 0
+          || candidate.endOffset() <= candidate.startOffset()
+          || candidate.endOffset() > request.text().codePointCount(0, request.text().length())) continue;
+      raw.add(
+          new Raw(
+              candidate.memeId(),
+              candidate.senseId(),
+              candidate.startOffset(),
+              candidate.endOffset(),
+              Set.of(candidate.source())));
+    }
     Map<String, Raw> dedup = new LinkedHashMap<>();
-    raw.forEach(
-        r -> dedup.putIfAbsent(r.memeId + ":" + r.senseId + ":" + r.start + ":" + r.end, r));
+    for (Raw r : raw) {
+      String key = r.memeId + ":" + r.senseId + ":" + r.start + ":" + r.end;
+      dedup.merge(key, r, (left, right) -> left.withSources(right.sources));
+    }
     List<Scored> scored = new ArrayList<>();
     for (Raw r : dedup.values()) score(r, request.text(), data).forEach(scored::add);
     List<Scored> disambiguated = disambiguate(scored);
@@ -112,7 +137,7 @@ public class RecognitionService {
                     .reversed()
                     .thenComparingInt(Scored::start))
             .limit(max)
-            .map(x -> output(x, request.text(), data))
+            .map(x -> output(x, request.text(), data, !candidates.isEmpty()))
             .toList();
     return Map.of(
         "matches", matches, "engine_version", "1.1", "processed_at", Instant.now().toString());
@@ -130,10 +155,12 @@ public class RecognitionService {
     for (Sense sense : senses) {
       double score = 1.2;
       List<String> reasons = new ArrayList<>();
-      reasons.add(
-          raw.source.contains("normalized") || raw.source.equals("variant")
-              ? "normalized_match"
-              : raw.source.replace("rule:", ""));
+      for (String source : raw.sources) {
+        reasons.add(
+            source.contains("normalized") || source.equals("variant")
+                ? "normalized_match"
+                : source.replace("rule:", ""));
+      }
       int senseHits = 0, minPriority = 100;
       boolean veto = false;
       for (Rule rule : data.rules().getOrDefault(raw.memeId, List.of())) {
@@ -161,7 +188,8 @@ public class RecognitionService {
               reasons,
               senseHits,
               minPriority,
-              false));
+              false,
+              recallSources(raw.sources)));
     }
     return out;
   }
@@ -214,7 +242,8 @@ public class RecognitionService {
                 best.reasons,
                 best.senseHits,
                 best.priority,
-                true);
+                true,
+                best.recallSources);
       out.add(best);
     }
     return out;
@@ -241,7 +270,7 @@ public class RecognitionService {
     return out;
   }
 
-  private Map<String, Object> output(Scored x, String text, Data data) {
+  private Map<String, Object> output(Scored x, String text, Data data, boolean includeRecallSources) {
     Entry e = data.entries().get(x.memeId);
     Map<String, Object> p = new LinkedHashMap<>();
     p.put("detect_enabled", e.detect());
@@ -263,6 +292,7 @@ public class RecognitionService {
     m.put("end_offset", x.end);
     m.put("confidence", Math.round(x.confidence * 10000d) / 10000d);
     m.put("match_reason", x.reasons);
+    if (includeRecallSources) m.put("recall_sources", x.recallSources);
     m.put("policy", p);
     return m;
   }
@@ -284,7 +314,22 @@ public class RecognitionService {
     return new int[] {s.offsetByCodePoints(0, start), s.offsetByCodePoints(0, end)};
   }
 
-  private record Raw(long memeId, Long senseId, int start, int end, String source) {}
+  private static Set<String> recallSources(Set<String> sources) {
+    Set<String> result = new LinkedHashSet<>();
+    for (String source : sources) {
+      if ("lexical".equals(source) || "semantic".equals(source)) result.add(source);
+      else result.add("rule");
+    }
+    return result;
+  }
+
+  private record Raw(long memeId, Long senseId, int start, int end, Set<String> sources) {
+    Raw withSources(Set<String> other) {
+      Set<String> merged = new LinkedHashSet<>(sources);
+      merged.addAll(other);
+      return new Raw(memeId, senseId, start, end, Set.copyOf(merged));
+    }
+  }
 
   private record Scored(
       long memeId,
@@ -296,5 +341,6 @@ public class RecognitionService {
       List<String> reasons,
       int senseHits,
       int priority,
-      boolean ambiguous) {}
+      boolean ambiguous,
+      Set<String> recallSources) {}
 }

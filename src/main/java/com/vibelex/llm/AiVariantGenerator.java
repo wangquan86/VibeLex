@@ -33,7 +33,8 @@ public class AiVariantGenerator {
   private final PromptTemplateLoader prompts;
   private final ObjectMapper mapper;
   private final TermNormalizer normalizer;
-  private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+  private final HttpClient client =
+      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
 
   public AiVariantGenerator(
       LlmScenarioProperties properties,
@@ -63,8 +64,10 @@ public class AiVariantGenerator {
             "tools",
                 List.of(
                     Map.of(
-                        "type", "web_search",
-                        "max_keyword", Math.max(1, Math.min(50, scenario.getWebSearchMaxKeyword())))));
+                        "type",
+                        "web_search",
+                        "max_keyword",
+                        Math.max(1, Math.min(50, scenario.getWebSearchMaxKeyword())))));
     try {
       long startedAt = System.nanoTime();
       log.info("开始调用 Responses 联网变体生成，model={}", scenario.getModel());
@@ -125,10 +128,11 @@ public class AiVariantGenerator {
     }
   }
 
-  private List<GeneratedVariant> parse(
-      String content, String term, List<SearchEvidence> citations) throws IOException {
+  private List<GeneratedVariant> parse(String content, String term, List<SearchEvidence> citations)
+      throws IOException {
     String json = content.trim();
-    if (json.startsWith("```")) json = json.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+    if (json.startsWith("```"))
+      json = json.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
     JsonNode root = mapper.readTree(json);
     JsonNode values = root.path("variants");
     if (!values.isArray()) throw new IllegalArgumentException("LLM 变体输出必须包含 variants 数组");
@@ -142,13 +146,13 @@ public class AiVariantGenerator {
       String normalized = normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type));
       if (normalized.equals(original) || !seen.add(type + "\u0000" + normalized)) continue;
       if (result.size() >= MAX_VARIANTS) break;
-      BigDecimal confidence = node.path("confidence").isNumber() ? node.path("confidence").decimalValue() : BigDecimal.ONE;
+      BigDecimal confidence =
+          node.path("confidence").isNumber()
+              ? node.path("confidence").decimalValue()
+              : BigDecimal.ONE;
       result.add(
           new GeneratedVariant(
-              value,
-              type,
-              confidence.max(BigDecimal.ZERO).min(BigDecimal.ONE),
-              citations));
+              value, type, confidence.max(BigDecimal.ZERO).min(BigDecimal.ONE), citations));
     }
     return result;
   }
@@ -197,10 +201,12 @@ public class AiVariantGenerator {
   private void addCitation(JsonNode citation, JsonNode fallback, List<SearchEvidence> result) {
     if (result.size() >= 2) return;
     String url = citation.path("url").asText(fallback.path("url").asText()).trim();
-    if (!isEvidenceUrl(url) || result.stream().anyMatch(existing -> existing.url().equals(url))) return;
+    if (!isEvidenceUrl(url) || result.stream().anyMatch(existing -> existing.url().equals(url)))
+      return;
     String title = citation.path("title").asText(fallback.path("title").asText()).trim();
     String snippet = citation.path("snippet").asText(fallback.path("snippet").asText()).trim();
-    if (snippet.isBlank()) snippet = citation.path("content").asText(fallback.path("content").asText()).trim();
+    if (snippet.isBlank())
+      snippet = citation.path("content").asText(fallback.path("content").asText()).trim();
     result.add(new SearchEvidence(url, title, snippet));
   }
 
@@ -212,8 +218,7 @@ public class AiVariantGenerator {
       String path = uri.getPath() == null ? "" : uri.getPath();
       if (path.isBlank() || "/".equals(path)) return false;
       String host = uri.getHost().toLowerCase(Locale.ROOT);
-      return !(Set.of("www.baidu.com", "m.baidu.com", "www.bing.com", "cn.bing.com")
-              .contains(host)
+      return !(Set.of("www.baidu.com", "m.baidu.com", "www.bing.com", "cn.bing.com").contains(host)
           && Set.of("/s", "/search").contains(path));
     } catch (URISyntaxException exception) {
       return false;

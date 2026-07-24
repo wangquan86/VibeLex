@@ -60,7 +60,8 @@ public class CandidateController {
 
   @PostMapping("/generate-variants")
   public Map<String, Object> generateVariants(@RequestBody VariantGenerationRequest request) {
-    return service.generateVariants(request.term(), request.definition(), request.retainedVariants());
+    return service.generateVariants(
+        request.term(), request.definition(), request.retainedVariants());
   }
 
   @PostMapping("/{id}/submit")

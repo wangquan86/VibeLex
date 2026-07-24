@@ -38,19 +38,22 @@ public class EntryWithdrawalService {
 
   @Transactional
   public Map<String, Object> withdraw(long entryId, String reason) {
-    Map<String, Object> row = database.one("SELECT * FROM meme_entries WHERE id=? FOR UPDATE", entryId);
+    Map<String, Object> row =
+        database.one("SELECT * FROM meme_entries WHERE id=? FOR UPDATE", entryId);
     if (!"published".equals(row.get("status"))) {
       throw new IllegalStateException("只有已发布词条可以撤回至候选池");
     }
     Map<String, Object> detail = entries.detail(entryId);
     ObjectNode snapshot = (ObjectNode) detail.get("snapshot");
     long candidateId = createCandidate(snapshot, entryId, reason);
-    int changed = database.update("UPDATE meme_entries SET status='archived' WHERE id=? AND status='published'", entryId);
+    int changed =
+        database.update(
+            "UPDATE meme_entries SET status='archived' WHERE id=? AND status='published'", entryId);
     if (changed == 0) throw new IllegalStateException("词条状态已变化，请刷新后重试");
     database.update(
         "UPDATE meme_safety_policies SET detect_enabled=0, display_enabled=0, generate_enabled=0, recommend_enabled=0 WHERE meme_id=?",
         entryId);
-    publishing.refreshRecognitionIndex();
+    publishing.removeRecognitionIndex(entryId);
     return Map.of("entryId", entryId, "candidateId", candidateId, "status", "archived");
   }
 
@@ -58,7 +61,8 @@ public class EntryWithdrawalService {
   public Map<String, Object> withdrawBatch(List<Long> entryIds, String reason) {
     if (entryIds == null || entryIds.isEmpty()) throw new IllegalArgumentException("请选择要撤回的正式词条");
     List<Long> ids = entryIds.stream().filter(id -> id != null).distinct().toList();
-    if (ids.isEmpty() || ids.size() > 100) throw new IllegalArgumentException("单次撤回数量必须在 1 到 100 条之间");
+    if (ids.isEmpty() || ids.size() > 100)
+      throw new IllegalArgumentException("单次撤回数量必须在 1 到 100 条之间");
     List<Map<String, Object>> results = new ArrayList<>();
     for (Long id : ids) results.add(withdraw(id, reason));
     return Map.of("withdrawnCount", results.size(), "items", results);
@@ -72,9 +76,11 @@ public class EntryWithdrawalService {
     if (term.isBlank() || definition.isBlank()) throw new IllegalStateException("正式词条快照缺少词形或释义");
     ObjectNode note = mapper.createObjectNode();
     note.put("category", entry.path("category").asText("other"));
-    if (entry.hasNonNull("origin_summary")) note.put("origin", entry.path("origin_summary").asText());
+    if (entry.hasNonNull("origin_summary"))
+      note.put("origin", entry.path("origin_summary").asText());
     ArrayNode examples = note.putArray("examples");
-    for (JsonNode example : snapshot.path("examples")) examples.add(example.path("example_text").asText());
+    for (JsonNode example : snapshot.path("examples"))
+      examples.add(example.path("example_text").asText());
     note.put("profanity", false);
     note.put("offense", false);
     note.set("variants", snapshot.path("variants"));

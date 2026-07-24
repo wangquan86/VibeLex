@@ -208,6 +208,8 @@ svg { width: 1.25em; height: 1.25em; fill: none; stroke: currentColor; stroke-li
 .panel-kicker { font-size: var(--font-caption); letter-spacing: .8px; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 16px; margin: -50px 22px 22px; position: relative; z-index: 5; }
+#index-tasks .stat-grid { margin: 0 0 22px; }
+#index-tasks .page-heading { min-height: 78px; }
 .stat-card { position: relative; min-height: 118px; padding: 22px; overflow: hidden; border-radius: 14px; transition: transform .2s, box-shadow .2s; }
 .stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
 .stat-card::after { position: absolute; right: -24px; bottom: -32px; width: 96px; height: 96px; border-radius: 50%; background: var(--primary-soft); content: ""; }

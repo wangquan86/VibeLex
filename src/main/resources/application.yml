@@ -31,3 +31,32 @@ vibelex:
         temperature: 0.2
         web-search-max-keyword: 2
         request-timeout-seconds: 90
+  recognition:
+    v2:
+      enabled: true
+      semantic-recall-enabled: true
+      min-confidence: 0.6
+      max-results: 20
+      sentence-max-characters: 480
+      fallback-to-v1-on-search-failure: true
+      fallback-to-v1-on-embedding-failure: true
+      elasticsearch:
+        enabled: true
+        uris: ${VIBELEX_ES_URIS:http://10.145.12.11:9200/}
+        index-name: vibelex_sense_v2
+        index-alias: vibelex_sense_current
+        connect-timeout-millis: 1000
+        request-timeout-millis: 3000
+        lexical-top-k: 20
+        semantic-top-k: 20
+        minimum-semantic-score: 0.65
+      embedding:
+        enabled: true
+        endpoint: https://xmedia-t.api.leiniao.com/edu-embedding/embedding/get_vector
+        model-name: bge-large-zh
+        vector-dimension: 1024
+        similarity: cosine
+        connect-timeout-millis: 3000
+        request-timeout-millis: 30000
+      index-worker:
+        fixed-delay-millis: 5000

@@ -4,6 +4,8 @@ import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.lexicon.application.LexiconSnapshotService;
 import com.vibelex.recognition.application.RecognitionIndex;
+import com.vibelex.recognitionv2.SemanticIndexService;
+import com.vibelex.recognitionv2.IndexSyncTaskService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -28,6 +30,8 @@ public class ChangeSetService {
   private final TermNormalizer normalizer;
   private final LexiconSnapshotService snapshots;
   private final RecognitionIndex recognitionIndex;
+  private final SemanticIndexService semanticIndex;
+  private final IndexSyncTaskService indexTasks;
 
   public ChangeSetService(
       MyBatisDatabase database,
@@ -35,13 +39,17 @@ public class ChangeSetService {
       CurrentActorProvider actor,
       TermNormalizer normalizer,
       LexiconSnapshotService snapshots,
-      RecognitionIndex recognitionIndex) {
+      RecognitionIndex recognitionIndex,
+      SemanticIndexService semanticIndex,
+      IndexSyncTaskService indexTasks) {
     this.database = database;
     this.mapper = mapper;
     this.actor = actor;
     this.normalizer = normalizer;
     this.snapshots = snapshots;
     this.recognitionIndex = recognitionIndex;
+    this.semanticIndex = semanticIndex;
+    this.indexTasks = indexTasks;
   }
 
   public Map<String, Object> list(String status, String query, int page, int size) {
@@ -286,7 +294,7 @@ public class ChangeSetService {
         LocalDateTime.now(),
         comment,
         id);
-    recognitionIndex.refresh();
+    refreshIndexes(memeId);
     return database.one("SELECT * FROM meme_entries WHERE id=?", memeId);
   }
 
@@ -352,13 +360,24 @@ public class ChangeSetService {
         submittedBy,
         reviewer);
     if (refreshIndex) {
-      recognitionIndex.refresh();
+      refreshIndexes(memeId);
     }
     return database.one("SELECT * FROM meme_entries WHERE id=?", memeId);
   }
 
   public void refreshRecognitionIndex() {
     recognitionIndex.refresh();
+    semanticIndex.rebuildAllAfterCommit();
+  }
+
+  /** 刷新单条正式词条的 V1 内存索引与 V2 ES 投影。 */
+  public void refreshRecognitionIndex(long memeId) {
+    refreshIndexes(memeId);
+  }
+
+  public void removeRecognitionIndex(long memeId) {
+    recognitionIndex.refresh();
+    indexTasks.enqueueAfterCommit(memeId, "DELETE");
   }
 
   @Transactional
@@ -397,8 +416,13 @@ public class ChangeSetService {
         json(actual),
         actor.currentActor(),
         actor.currentActor());
-    recognitionIndex.refresh();
+    refreshIndexes(memeId);
     return database.one("SELECT * FROM meme_entries WHERE id=?", memeId);
+  }
+
+  private void refreshIndexes(long memeId) {
+    recognitionIndex.refresh();
+    indexTasks.enqueueAfterCommit(memeId, "UPSERT");
   }
 
   private long createEntry(JsonNode e, String reviewer) {

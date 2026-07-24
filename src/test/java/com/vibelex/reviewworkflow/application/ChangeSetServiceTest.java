@@ -12,6 +12,8 @@ import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.lexicon.application.LexiconSnapshotService;
 import com.vibelex.recognition.application.RecognitionIndex;
+import com.vibelex.recognitionv2.SemanticIndexService;
+import com.vibelex.recognitionv2.IndexSyncTaskService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +36,9 @@ class ChangeSetServiceTest {
             mock(CurrentActorProvider.class),
             mock(TermNormalizer.class),
             mock(LexiconSnapshotService.class),
-            mock(RecognitionIndex.class));
+            mock(RecognitionIndex.class),
+            mock(SemanticIndexService.class),
+            mock(IndexSyncTaskService.class));
   }
 
   @Test

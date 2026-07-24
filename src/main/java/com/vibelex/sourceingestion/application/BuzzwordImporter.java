@@ -94,5 +94,4 @@ public class BuzzwordImporter implements CandidateImporter {
     JsonNode value = item.get(field);
     return value == null || value.isNull() || !value.isTextual() ? null : value.asText();
   }
-
 }

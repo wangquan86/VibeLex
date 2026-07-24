@@ -1,6 +1,9 @@
 package com.vibelex.shared;
 
+import com.vibelex.recognitionv2.RecognitionV2Service;
 import java.net.URI;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -10,8 +13,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+  private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+  @ExceptionHandler(RecognitionV2Service.TextTooLongException.class)
+  ProblemDetail textTooLong(RecognitionV2Service.TextTooLongException ex) {
+    return problem(HttpStatus.PAYLOAD_TOO_LARGE, "文本超过 V2 识别长度上限");
+  }
+
   @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
   ProblemDetail badRequest(RuntimeException ex) {
+    log.error("API 请求处理失败: {}", ex.getMessage(), ex);
     return problem(HttpStatus.BAD_REQUEST, ex.getMessage());
   }
 

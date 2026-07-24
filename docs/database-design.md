@@ -501,7 +501,7 @@ CREATE TABLE meme_examples (
 
 ### 用途
 
-保存用于文本识别的规则，包括精确匹配、正则、拼音、正负上下文和语义阈值。
+保存用于文本识别的规则，包括精确匹配、正则、拼音和正负上下文。
 
 ### 建表语句
 
@@ -513,7 +513,7 @@ CREATE TABLE meme_match_rules (
 
     sense_id BIGINT UNSIGNED NULL COMMENT '关联义项 ID；为空表示规则适用于整个词条',
 
-    rule_type VARCHAR(32) NOT NULL COMMENT '规则类型：exact_match、normalized_match、regex_match、pinyin_match、positive_context、negative_context、entity_exclusion、semantic_threshold',
+    rule_type VARCHAR(32) NOT NULL COMMENT '规则类型：exact_match、normalized_match、regex_match、pinyin_match、positive_context、negative_context、entity_exclusion；semantic_threshold 为历史预留值，不参与 V1/V2 运行时',
 
     rule_value TEXT NOT NULL COMMENT '规则具体内容，例如词面、正则表达式、上下文关键词或实体名称',
 
@@ -521,7 +521,7 @@ CREATE TABLE meme_match_rules (
 
     weight DECIMAL(6,4) NOT NULL DEFAULT 1.0000 COMMENT '规则权重，用于多规则综合判断；负向规则可使用负值',
 
-    threshold DECIMAL(6,4) NULL COMMENT '规则阈值，例如语义匹配最低相似度 0.8200',
+    threshold DECIMAL(6,4) NULL COMMENT '预留规则阈值；V1/V2 当前不使用',
 
     priority INT NOT NULL DEFAULT 100 COMMENT '规则优先级，数值越小越优先执行',
 
@@ -1087,7 +1087,7 @@ pinyin_match        拼音匹配
 positive_context    正向上下文关键词
 negative_context    负向上下文关键词
 entity_exclusion    专名、字面义或实体排除规则
-semantic_threshold  语义相似度阈值规则
+semantic_threshold  历史预留值；V1/V2 运行时不执行，语义召回阈值由 V2 配置管理
 ```
 
 ---

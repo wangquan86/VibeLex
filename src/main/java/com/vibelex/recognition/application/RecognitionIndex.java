@@ -212,7 +212,9 @@ public class RecognitionIndex {
 
   private static boolean spacingEligible(String value) {
     return value != null
-        && value.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
+        && value
+            .codePoints()
+            .anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
   }
 
   private static <T> Map<Long, List<T>> immutableLists(Map<Long, List<T>> source) {

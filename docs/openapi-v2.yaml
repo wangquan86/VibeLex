@@ -1,0 +1,85 @@
+openapi: 3.0.3
+info:
+  title: VibeLex Recognition API
+  version: 2.0.0
+paths:
+  /api/v2/recognitions:
+    post:
+      summary: 识别文本中的已发布网络词条
+      description: 使用 V1 规则、ES 词法召回和语义候选完成词条识别。纯语义候选没有规则、词法或上下文佐证时不会返回。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: {type: string, description: 待识别的原始文本。Unicode 码点 offset 均基于此文本计算。}
+                language_code: {type: string, default: zh-CN, description: 文本语言代码；V2 首期主要支持 zh-CN。}
+                options:
+                  type: object
+                  properties:
+                    min_confidence: {type: number, minimum: 0, maximum: 1, description: 最终结果最低置信度，默认使用服务端配置。}
+                    max_results: {type: integer, minimum: 1, maximum: 200, description: 最多返回的命中数量。}
+                    enable_semantic_recall: {type: boolean, description: 是否允许本次请求执行语义候选召回；服务端总开关关闭时无效。}
+      responses:
+        '200':
+          description: 识别完成；degraded 为 true 时已降级到 V1 规则识别
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id: {type: string}
+                  matches: {type: array, items: {$ref: '#/components/schemas/Match'}}
+                  engine_version: {type: string, example: '2.0'}
+                  index_version: {type: string}
+                  degraded: {type: boolean}
+                  processed_at: {type: string, format: date-time}
+        '400': {description: 请求无效或 V2 未启用}
+        '413': {description: 文本超过配置上限}
+  /api/admin/recognition-v2/index:
+    get:
+      summary: 查看 V2 ES 索引状态
+      description: 返回当前 Elasticsearch alias 的可用性和 HTTP 状态，供管理台或运维排查使用。
+      responses:
+        '200':
+          description: 当前索引状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: {type: boolean, description: ES 检索功能是否已启用。}
+                  status: {type: integer, description: 查询 ES alias 返回的 HTTP 状态码。}
+                  alias: {type: string, description: 当前查询使用的 ES 索引别名。}
+  /api/admin/recognition-v2/index/rebuild:
+    post:
+      summary: 全量重建 V2 ES 义项索引
+      description: 从 MySQL 中正式发布或归档、且允许识别的词条重新生成向量，写入新物理索引并原子切换 alias。候选池不会进入索引。首次启用 V2 时需要执行一次。
+      responses:
+        '200':
+          description: 索引重建已完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: {type: boolean, description: 重建请求是否已被成功执行。}
+components:
+  schemas:
+    Match:
+      type: object
+      properties:
+        meme_id: {type: integer, format: int64, description: 词条主键 ID。}
+        sense_id: {type: integer, format: int64, nullable: true, description: 命中的义项 ID；未能确定义项时为空。}
+        canonical_term: {type: string, description: 词条标准名称。}
+        matched_text: {type: string, description: 在输入原文中实际命中的文本片段。}
+        start_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点起始偏移，包含该位置。}
+        end_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点结束偏移，不包含该位置。}
+        confidence: {type: number, description: 综合规则、上下文和召回证据后的最终置信度，范围 0 到 1。}
+        recall_sources:
+          type: array
+          description: 最终结果所使用的候选召回来源。rule 为 V1 规则候选；lexical 为 ES 词法候选或语义候选所需的原文词面锚点；semantic 为 ES 向量语义候选。所有来源均须通过统一的上下文、义项、重叠和风险校验后才会返回。
+          items: {type: string, enum: [rule, lexical, semantic], description: rule 为 V1 规则；lexical 为 ES 词法；semantic 为 ES 向量语义候选。}

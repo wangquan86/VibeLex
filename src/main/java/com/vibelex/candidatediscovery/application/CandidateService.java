@@ -13,10 +13,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -282,9 +282,9 @@ public class CandidateService {
   public Map<String, Object> batchApprove(List<Long> candidateIds, String comment) {
     List<Long> ids = validateBatchIds(candidateIds, "批准");
     for (Long id : ids) {
-      approveInternal(id, comment, false);
+      Map<String, Object> published = approveInternal(id, comment, false);
+      publishingService.refreshRecognitionIndex(((Number) published.get("id")).longValue());
     }
-    publishingService.refreshRecognitionIndex();
     return Map.of("approvedCount", ids.size(), "ids", ids);
   }
 
@@ -356,27 +356,37 @@ public class CandidateService {
         java.time.LocalDateTime.now(),
         blankToNull(comment),
         candidateId);
-    if (refreshIndex) publishingService.refreshRecognitionIndex();
+    if (refreshIndex) publishingService.refreshRecognitionIndex(publishedId);
     return published;
   }
 
   public Map<String, Object> generateVariants(
       String term,
       String definition,
-      List<com.vibelex.candidatediscovery.api.CandidateController.VariantRequest> retainedVariants) {
+      List<com.vibelex.candidatediscovery.api.CandidateController.VariantRequest>
+          retainedVariants) {
     validateCandidate(term, definition);
     List<Map<String, Object>> variants = new java.util.ArrayList<>();
     Set<String> retained = new java.util.HashSet<>();
     if (retainedVariants != null) {
       for (var item : retainedVariants) {
         if (item == null || item.variant() == null || item.variant().isBlank()) continue;
-        String type = item.variantType() == null || item.variantType().isBlank() ? "alias" : item.variantType();
-        retained.add(type + "\u0000" + normalizer.normalize(item.variant().trim(), "zh-CN", normalizer.profileForVariant(type)));
+        String type =
+            item.variantType() == null || item.variantType().isBlank()
+                ? "alias"
+                : item.variantType();
+        retained.add(
+            type
+                + "\u0000"
+                + normalizer.normalize(
+                    item.variant().trim(), "zh-CN", normalizer.profileForVariant(type)));
       }
     }
     for (AiVariantGenerator.GeneratedVariant variant :
         variantGenerator.generate(term.trim(), definition.trim())) {
-      if (normalizer.normalize(variant.variant(), "zh-CN").equals(normalizer.normalize(term.trim(), "zh-CN"))) continue;
+      if (normalizer
+          .normalize(variant.variant(), "zh-CN")
+          .equals(normalizer.normalize(term.trim(), "zh-CN"))) continue;
       String normalized =
           normalizer.normalize(
               variant.variant(), "zh-CN", normalizer.profileForVariant(variant.variantType()));
@@ -427,20 +437,21 @@ public class CandidateService {
         String value = item.path("variant").asText();
         String type = item.path("variant_type").asText();
         if (!value.isBlank() && !type.isBlank()) {
-          existing.add(type + "\u0000" + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
+          existing.add(
+              type
+                  + "\u0000"
+                  + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
         }
       }
       for (AiVariantGenerator.GeneratedVariant variant :
           variantGenerator.generate(
-              String.valueOf(candidate.get("term_raw")), stringValue(candidate.get("definition_raw")))) {
+              String.valueOf(candidate.get("term_raw")),
+              stringValue(candidate.get("definition_raw")))) {
         if (normalizer.normalize(variant.variant(), "zh-CN").equals(canonical)) continue;
         String normalized =
             normalizer.normalize(
                 variant.variant(), "zh-CN", normalizer.profileForVariant(variant.variantType()));
-        String key =
-            variant.variantType()
-                + "\u0000"
-                + normalized;
+        String key = variant.variantType() + "\u0000" + normalized;
         if (existing.add(key) && !publishedVariantExists(normalized)) {
           variants
               .addObject()
@@ -563,7 +574,10 @@ public class CandidateService {
       String value = item.path("variant").asText();
       String type = item.path("variant_type").asText();
       if (!value.isBlank() && !type.isBlank()) {
-        existing.add(type + "\u0000" + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
+        existing.add(
+            type
+                + "\u0000"
+                + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
       }
     }
     for (JsonNode item : note.path("variants")) {
@@ -576,7 +590,8 @@ public class CandidateService {
       if ("ai_suggested".equals(item.path("source_method").asText())
           && publishedVariantExists(normalized)) continue;
       if (existing.add(key)) {
-        target.addObject()
+        target
+            .addObject()
             .put("variant", value)
             .put("variant_type", type)
             .put("confidence", item.path("confidence").asDouble(1))
@@ -769,22 +784,34 @@ public class CandidateService {
     if (variants != null) {
       String normalizedTerm = normalizer.normalize(term, "zh-CN");
       variants.stream()
-          .filter(variant -> variant != null && variant.variant() != null && !variant.variant().isBlank())
+          .filter(
+              variant ->
+                  variant != null && variant.variant() != null && !variant.variant().isBlank())
           .forEach(
               variant -> {
-                if (normalizer.normalize(variant.variant().trim(), "zh-CN").equals(normalizedTerm)) {
+                if (normalizer
+                    .normalize(variant.variant().trim(), "zh-CN")
+                    .equals(normalizedTerm)) {
                   if (!"ai_suggested".equals(variant.sourceMethod())) {
                     throw new IllegalArgumentException("词形变体不能与候选词形重复");
                   }
                   return;
                 }
-                String type = variant.variantType() == null || variant.variantType().isBlank()
-                    ? "alias" : variant.variantType().trim();
-                ObjectNode saved = savedVariants.addObject()
-                    .put("variant", variant.variant().trim())
-                    .put("variant_type", type)
-                    .put("confidence", variant.confidence() == null ? 1 : variant.confidence())
-                    .put("source_method", "ai_suggested".equals(variant.sourceMethod()) ? "ai_suggested" : "editorial");
+                String type =
+                    variant.variantType() == null || variant.variantType().isBlank()
+                        ? "alias"
+                        : variant.variantType().trim();
+                ObjectNode saved =
+                    savedVariants
+                        .addObject()
+                        .put("variant", variant.variant().trim())
+                        .put("variant_type", type)
+                        .put("confidence", variant.confidence() == null ? 1 : variant.confidence())
+                        .put(
+                            "source_method",
+                            "ai_suggested".equals(variant.sourceMethod())
+                                ? "ai_suggested"
+                                : "editorial");
                 ArrayNode evidence = saved.putArray("evidence");
                 if (variant.evidence() != null) {
                   Set<String> evidenceUrls = new java.util.HashSet<>();
@@ -798,7 +825,9 @@ public class CandidateService {
                                   .addObject()
                                   .put("url", item.url().trim())
                                   .put("title", item.title() == null ? "" : item.title().trim())
-                                  .put("snippet", item.snippet() == null ? "" : item.snippet().trim()));
+                                  .put(
+                                      "snippet",
+                                      item.snippet() == null ? "" : item.snippet().trim()));
                 }
               });
     }

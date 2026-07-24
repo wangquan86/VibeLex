@@ -27,6 +27,9 @@ const ENUM_LABELS = {
   running: "运行中",
   editing: "编辑中",
   pending: "待处理",
+  processing: "处理中",
+  UPSERT: "写入/更新",
+  DELETE: "删除",
   pending_review: "审核中",
   returned: "已退回",
   published: "已发布",
@@ -1066,6 +1069,18 @@ async function loadOverview() {
     .join("");
 }
 
+async function loadIndexTasks() {
+  const status = find("#index-task-status").value;
+  const data = await api(`/api/admin/recognition-v2/index/tasks?status=${encodeURIComponent(status)}&page=1&size=50`);
+  const counts = Object.fromEntries((data.summary || []).map((item) => [item.status, item.count]));
+  find("#index-task-summary").innerHTML = ["pending", "processing", "failed", "succeeded"].map((key) => `<div class="stat-card"><span>${enumLabel(key)}</span><strong>${counts[key] || 0}</strong></div>`).join("");
+  find("#index-task-count").textContent = `共 ${data.totalElements || 0} 条`;
+  find("#index-task-table").innerHTML = renderTable(data.items || [], [
+    ["词条", (row) => `#${row.meme_id}`], ["操作", (row) => enumLabel(row.operation)], ["状态", (row) => statusBadge(row.status)], ["重试", (row) => row.retry_count], ["失败原因", (row) => escapeHtml(row.last_error || "—")], ["更新时间", (row) => row.updated_at || "—"], ["操作", (row) => row.status === "failed" ? `<button class="table-action" data-index-task-retry="${row.id}">重新入队</button>` : "—"],
+  ]);
+  document.querySelectorAll("[data-index-task-retry]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/admin/recognition-v2/index/tasks/${button.dataset.indexTaskRetry}/retry`, { method: "POST" }); showToast("任务已重新入队"); await loadIndexTasks(); }));
+}
+
 async function loadPage(pageName) {
   try {
     const loaders = {
@@ -1074,6 +1089,7 @@ async function loadPage(pageName) {
       candidates: loadCandidates,
       reviews: loadReviews,
       entries: loadEntries,
+      "index-tasks": loadIndexTasks,
     };
     if (loaders[pageName]) {
       await loaders[pageName]();
@@ -1084,6 +1100,8 @@ async function loadPage(pageName) {
 }
 
 find("#refresh-files").addEventListener("click", loadFiles);
+find("#index-task-refresh").addEventListener("click", loadIndexTasks);
+find("#index-task-search").addEventListener("click", loadIndexTasks);
 find("#import-source").addEventListener("change", () => {
   find("#source-version").value = "manual-local";
   find("#license-status").value = "approved";

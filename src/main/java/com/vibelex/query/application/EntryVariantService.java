@@ -61,12 +61,17 @@ public class EntryVariantService {
       String value = variant.path("variant").asText();
       String type = variant.path("variant_type").asText();
       if (!value.isBlank() && !type.isBlank()) {
-        existing.add(type + "\u0000" + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
+        existing.add(
+            type
+                + "\u0000"
+                + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
       }
     }
     for (AiVariantGenerator.GeneratedVariant variant : generator.generate(term, definition)) {
       if (normalizer.normalize(variant.variant(), "zh-CN").equals(canonicalNormalized)) continue;
-      String normalized = normalizer.normalize(variant.variant(), "zh-CN", normalizer.profileForVariant(variant.variantType()));
+      String normalized =
+          normalizer.normalize(
+              variant.variant(), "zh-CN", normalizer.profileForVariant(variant.variantType()));
       String key = variant.variantType() + "\u0000" + normalized;
       if (existing.add(key) && !publishedVariantExistsElsewhere(memeId, normalized)) {
         retained

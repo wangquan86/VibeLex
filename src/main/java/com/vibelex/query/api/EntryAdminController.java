@@ -3,12 +3,12 @@ package com.vibelex.query.api;
 import com.vibelex.query.application.EntryAdminQueryService;
 import com.vibelex.query.application.EntryVariantService;
 import com.vibelex.query.application.EntryWithdrawalService;
-import java.util.Map;
 import java.util.List;
-import org.springframework.web.bind.annotation.RequestBody;
+import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,7 +21,10 @@ public class EntryAdminController {
   private final EntryVariantService variants;
   private final EntryWithdrawalService withdrawals;
 
-  public EntryAdminController(EntryAdminQueryService service, EntryVariantService variants, EntryWithdrawalService withdrawals) {
+  public EntryAdminController(
+      EntryAdminQueryService service,
+      EntryVariantService variants,
+      EntryWithdrawalService withdrawals) {
     this.service = service;
     this.variants = variants;
     this.withdrawals = withdrawals;
@@ -51,7 +54,8 @@ public class EntryAdminController {
   }
 
   @PostMapping("/{id}/withdraw")
-  public Map<String, Object> withdraw(@PathVariable long id, @RequestBody(required = false) WithdrawalRequest request) {
+  public Map<String, Object> withdraw(
+      @PathVariable long id, @RequestBody(required = false) WithdrawalRequest request) {
     return withdrawals.withdraw(id, request == null ? null : request.reason());
   }
 
@@ -61,5 +65,6 @@ public class EntryAdminController {
   }
 
   public record WithdrawalRequest(String reason) {}
+
   public record BatchWithdrawalRequest(List<Long> ids, String reason) {}
 }

@@ -1,7 +1,7 @@
 # VibeLex 识别引擎 V1 规格
 
 **产品版本：** V1.0  
-**文档修订：** 1.1  
+**文档修订：** 1.2
 **依赖：** [数据库设计](database-design.md)、[归一化规范](normalization-spec.md)
 
 ---
@@ -17,7 +17,7 @@
 - 风险策略过滤；
 - 输出结构。
 
-V1 以 **规则驱动** 为主，语义相似度匹配为可选增强（需配置 `semantic_threshold` 规则且接入向量服务）。
+V1 为纯**规则驱动**识别：变体、词面规则、正则和上下文规则共同完成召回与打分。语义召回不属于 V1 已实现范围，统一由 V2 的 Elasticsearch 混合召回方案提供。
 
 ---
 
@@ -171,13 +171,9 @@ positive_context / negative_context / entity_exclusion：仅用于候选评分�
 
 V1 建议：正则规则数量 < 500 时全量扫描；超过则按 category 分桶或迁移至 OpenSearch。
 
-### 5.3 语义召回（可选，V1 不默认开启）
+### 5.3 语义召回
 
-```text
-若存在 semantic_threshold 类型规则且接入向量服务：
-1. 对文本或句子计算 embedding；
-2. 与义项向量比对，超过 threshold 的加入候选集。
-```
+不属于 V1 实现范围。`semantic_threshold` 曾作为数据库中的预留规则类型出现，但 V1 运行时不读取、不执行该规则，也不依赖向量服务。V2 采用 Elasticsearch kNN 与统一配置阈值实现语义候选召回，详见 [V2 识别与 ES 方案](v2-recognition-and-es-design.md)。
 
 ---
 
@@ -202,7 +198,6 @@ sense_id 为空且词条没有 active 义项：保留词条级候选，最终 se
 | `positive_context` | 窗口内包含关键词（rule_config.window，默认 20 字） | +0.3 |
 | `negative_context` | 窗口内包含关键词 | -0.5 |
 | `entity_exclusion` | 窗口内出现排除实体/字面义信号 | -1.0（可否决） |
-| `semantic_threshold` | 向量相似度 >= threshold | +0.8 |
 
 ### 6.2 综合得分公式
 
