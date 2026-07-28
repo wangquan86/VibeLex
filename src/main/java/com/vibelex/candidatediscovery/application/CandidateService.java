@@ -136,6 +136,7 @@ public class CandidateService {
   }
 
   @Transactional
+  @SuppressWarnings("DuplicatedCode") // Public command signature intentionally mirrors update.
   public Map<String, Object> create(
       String term,
       String definition,
@@ -171,6 +172,7 @@ public class CandidateService {
   }
 
   @Transactional
+  @SuppressWarnings("DuplicatedCode") // Compatibility overload delegates to the variant-aware API.
   public Map<String, Object> update(
       long candidateId,
       String term,
@@ -195,6 +197,7 @@ public class CandidateService {
   }
 
   @Transactional
+  @SuppressWarnings("DuplicatedCode") // Public command signature intentionally mirrors create.
   public Map<String, Object> update(
       long candidateId,
       String term,
@@ -431,18 +434,8 @@ public class CandidateService {
     if (!variantGenerator.isEnabled()) return;
     try {
       ArrayNode variants = snapshot.withArray("variants");
-      String canonical = snapshot.path("meme_entry").path("normalized_term").asText();
-      Set<String> existing = new java.util.HashSet<>();
-      for (JsonNode item : variants) {
-        String value = item.path("variant").asText();
-        String type = item.path("variant_type").asText();
-        if (!value.isBlank() && !type.isBlank()) {
-          existing.add(
-              type
-                  + "\u0000"
-                  + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
-        }
-      }
+      String canonical = snapshot.path("meme_entry").path("normalized_term").asString();
+      Set<String> existing = variantKeys(variants);
       for (AiVariantGenerator.GeneratedVariant variant :
           variantGenerator.generate(
               String.valueOf(candidate.get("term_raw")),
@@ -451,7 +444,7 @@ public class CandidateService {
         String normalized =
             normalizer.normalize(
                 variant.variant(), "zh-CN", normalizer.profileForVariant(variant.variantType()));
-        String key = variant.variantType() + "\u0000" + normalized;
+        String key = variantKey(variant.variantType(), normalized);
         if (existing.add(key) && !publishedVariantExists(normalized)) {
           variants
               .addObject()
@@ -502,20 +495,10 @@ public class CandidateService {
     if (duplicateMemeId != null) {
       ObjectNode snapshot = existingSnapshot(duplicateMemeId);
       ObjectNode entry = (ObjectNode) snapshot.path("meme_entry");
-      entry.put("canonical_term", term);
-      entry.put("normalized_term", normalizedTerm);
-      entry.put("status", "published");
-      entry.put("category", candidateCategory(note));
-      if (note.hasNonNull("origin")) {
-        entry.put("origin_summary", note.path("origin").asText());
-      }
-      ArrayNode senses = (ArrayNode) snapshot.withArray("senses");
+      updateEntry(entry, term, normalizedTerm, note);
+      ArrayNode senses = snapshot.withArray("senses");
       ObjectNode sense = senses.isEmpty() ? senses.addObject() : (ObjectNode) senses.get(0);
-      String safeDefinition = definition == null || definition.isBlank() ? "待编辑补充释义" : definition;
-      sense.put("sense_no", 1);
-      sense.put(
-          "short_definition", safeDefinition.substring(0, Math.min(500, safeDefinition.length())));
-      sense.put("definition", safeDefinition);
+      updateSense(sense, definition);
       snapshot.remove("examples");
       appendExamples(snapshot, note);
       snapshot.remove("safety_policy");
@@ -541,53 +524,51 @@ public class CandidateService {
 
   private void appendEntry(ObjectNode snapshot, String term, String normalizedTerm, JsonNode note) {
     ObjectNode entry = snapshot.putObject("meme_entry");
+    updateEntry(entry, term, normalizedTerm, note);
+    entry.put("language_code", "zh-CN");
+    entry.put("trend_status", "untracked");
+  }
+
+  private void updateEntry(ObjectNode entry, String term, String normalizedTerm, JsonNode note) {
     entry.put("canonical_term", term);
     entry.put("normalized_term", normalizedTerm);
-    entry.put("language_code", "zh-CN");
     entry.put("category", candidateCategory(note));
-    entry.put("trend_status", "untracked");
     entry.put("status", "published");
 
     if (note.hasNonNull("origin")) {
-      entry.put("origin_summary", note.path("origin").asText());
+      entry.put("origin_summary", note.path("origin").asString());
     }
   }
 
   private void appendSense(ObjectNode snapshot, String definition) {
-    String safeDefinition = definition == null || definition.isBlank() ? "待编辑补充释义" : definition;
-    String shortDefinition = safeDefinition.substring(0, Math.min(500, safeDefinition.length()));
-
     ObjectNode sense = snapshot.putArray("senses").addObject();
-    sense.put("sense_no", 1);
-    sense.put("short_definition", shortDefinition);
-    sense.put("definition", safeDefinition);
+    updateSense(sense, definition);
     sense.put("polarity", "neutral");
     sense.put("formality", "informal");
     sense.put("status", "active");
   }
 
+  private void updateSense(ObjectNode sense, String definition) {
+    String safeDefinition = definition == null || definition.isBlank() ? "待编辑补充释义" : definition;
+    String shortDefinition = safeDefinition.substring(0, Math.min(500, safeDefinition.length()));
+
+    sense.put("sense_no", 1);
+    sense.put("short_definition", shortDefinition);
+    sense.put("definition", safeDefinition);
+  }
+
   private void appendVariants(ObjectNode snapshot, JsonNode note) {
     ArrayNode target = snapshot.withArray("variants");
-    String canonical = snapshot.path("meme_entry").path("normalized_term").asText();
-    Set<String> existing = new java.util.HashSet<>();
-    for (JsonNode item : target) {
-      String value = item.path("variant").asText();
-      String type = item.path("variant_type").asText();
-      if (!value.isBlank() && !type.isBlank()) {
-        existing.add(
-            type
-                + "\u0000"
-                + normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type)));
-      }
-    }
+    String canonical = snapshot.path("meme_entry").path("normalized_term").asString();
+    Set<String> existing = variantKeys(target);
     for (JsonNode item : note.path("variants")) {
-      String value = item.path("variant").asText().trim();
-      String type = item.path("variant_type").asText().trim();
+      String value = item.path("variant").asString().trim();
+      String type = item.path("variant_type").asString().trim();
       if (value.isBlank() || type.isBlank()) continue;
       if (normalizer.normalize(value, "zh-CN").equals(canonical)) continue;
       String normalized = normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type));
-      String key = type + "\u0000" + normalized;
-      if ("ai_suggested".equals(item.path("source_method").asText())
+      String key = variantKey(type, normalized);
+      if ("ai_suggested".equals(item.path("source_method").asString())
           && publishedVariantExists(normalized)) continue;
       if (existing.add(key)) {
         target
@@ -595,25 +576,41 @@ public class CandidateService {
             .put("variant", value)
             .put("variant_type", type)
             .put("confidence", item.path("confidence").asDouble(1))
-            .put("source_method", item.path("source_method").asText("editorial"))
+            .put("source_method", item.path("source_method").asString("editorial"))
             .put("status", "active");
         appendVariantEvidence(snapshot.withArray("evidence"), item);
       }
     }
   }
 
+  private Set<String> variantKeys(ArrayNode variants) {
+    Set<String> keys = new java.util.HashSet<>();
+    for (JsonNode item : variants) {
+      String value = item.path("variant").asString();
+      String type = item.path("variant_type").asString();
+      if (!value.isBlank() && !type.isBlank()) {
+        String normalized =
+            normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type));
+        keys.add(variantKey(type, normalized));
+      }
+    }
+    return keys;
+  }
+
+  private String variantKey(String type, String normalized) {
+    return type + "\u0000" + normalized;
+  }
+
   private void appendVariantEvidence(ArrayNode evidence, JsonNode variant) {
     Set<String> existingUrls = evidenceUrls(evidence);
     for (JsonNode item : variant.path("evidence")) {
-      String url = item.path("url").asText().trim();
+      String url = item.path("url").asString().trim();
       if (url.isBlank() || url.length() > 2048 || !existingUrls.add(url)) continue;
-      evidence
-          .addObject()
-          .put("source_layer", "explanation")
-          .put("source_name", item.path("title").asText("联网搜索"))
-          .put("source_url", url)
-          .put("evidence_role", "variant")
-          .put("evidence_note", item.path("snippet").asText())
+      appendVariantEvidenceItem(
+              evidence,
+              item.path("title").asString("联网搜索"),
+              url,
+              item.path("snippet").asString())
           .put("confidence", variant.path("confidence").asDouble(1))
           .put("status", "active");
     }
@@ -624,22 +621,28 @@ public class CandidateService {
     Set<String> existingUrls = evidenceUrls(evidence);
     for (AiVariantGenerator.SearchEvidence item : variant.evidence()) {
       if (!existingUrls.add(item.url())) continue;
-      evidence
-          .addObject()
-          .put("source_layer", "explanation")
-          .put("source_name", item.title().isBlank() ? "联网搜索" : item.title())
-          .put("source_url", item.url())
-          .put("evidence_role", "variant")
-          .put("evidence_note", item.snippet())
+      appendVariantEvidenceItem(
+              evidence, item.title().isBlank() ? "联网搜索" : item.title(), item.url(), item.snippet())
           .put("confidence", variant.confidence())
           .put("status", "active");
     }
   }
 
+  private ObjectNode appendVariantEvidenceItem(
+      ArrayNode evidence, String sourceName, String sourceUrl, String evidenceNote) {
+    return evidence
+        .addObject()
+        .put("source_layer", "explanation")
+        .put("source_name", sourceName)
+        .put("source_url", sourceUrl)
+        .put("evidence_role", "variant")
+        .put("evidence_note", evidenceNote);
+  }
+
   private Set<String> evidenceUrls(ArrayNode evidence) {
     Set<String> urls = new java.util.HashSet<>();
     for (JsonNode item : evidence) {
-      String url = item.path("source_url").asText().trim();
+      String url = item.path("source_url").asString().trim();
       if (!url.isBlank()) urls.add(url);
     }
     return urls;
@@ -654,10 +657,10 @@ public class CandidateService {
     note.path("examples")
         .forEach(
             example -> {
-              if (example.isTextual()) {
+              if (example.isString()) {
                 examples
                     .addObject()
-                    .put("example_text", example.asText())
+                    .put("example_text", example.asString())
                     .put("example_role", "positive")
                     .put("status", "approved");
               }
@@ -835,10 +838,10 @@ public class CandidateService {
   }
 
   private String candidateCategory(JsonNode note) {
-    if (note.hasNonNull("category") && !note.path("category").asText().isBlank()) {
-      return note.path("category").asText();
+    if (note.hasNonNull("category") && !note.path("category").asString().isBlank()) {
+      return note.path("category").asString();
     }
-    return category(note.path("type_en").asText());
+    return category(note.path("type_en").asString());
   }
 
   private void validateCandidate(String term, String definition) {
@@ -884,7 +887,9 @@ public class CandidateService {
 
   private String category(String type) {
     String value = type.toLowerCase(Locale.ROOT);
-    if (value.contains("homoph")) {
+    if (value.contains("homophone")
+        || value.contains("homophonic")
+        || value.contains("homophony")) {
       return "homophone";
     }
     if (value.contains("abbrev")) {

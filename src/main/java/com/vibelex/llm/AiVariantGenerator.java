@@ -26,6 +26,7 @@ public class AiVariantGenerator {
   private static final Logger log = LoggerFactory.getLogger(AiVariantGenerator.class);
   public static final String SCENARIO = "variant-generation";
   private static final int MAX_VARIANTS = 3;
+  private static final int MAX_LOGGED_RESPONSE_LENGTH = 500;
   private static final Set<String> ALLOWED_TYPES =
       Set.of("alias", "abbreviation", "pinyin", "homophone", "typo_variant");
 
@@ -84,7 +85,7 @@ public class AiVariantGenerator {
         log.warn(
             "Responses 联网变体生成失败，status={}, body={}",
             response.statusCode(),
-            abbreviate(response.body(), 500));
+            abbreviate(response.body()));
         throw new IllegalStateException("LLM 返回 HTTP " + response.statusCode());
       }
       log.debug("Responses 联网变体生成原始响应：{}", response.body());
@@ -140,8 +141,8 @@ public class AiVariantGenerator {
     Set<String> seen = new LinkedHashSet<>();
     List<GeneratedVariant> result = new ArrayList<>();
     for (JsonNode node : values) {
-      String value = node.path("variant").asText().trim();
-      String type = node.path("variant_type").asText().trim();
+      String value = node.path("variant").asString().trim();
+      String type = node.path("variant_type").asString().trim();
       if (value.isBlank() || value.length() > 255 || !ALLOWED_TYPES.contains(type)) continue;
       String normalized = normalizer.normalize(value, "zh-CN", normalizer.profileForVariant(type));
       if (normalized.equals(original) || !seen.add(type + "\u0000" + normalized)) continue;
@@ -158,16 +159,16 @@ public class AiVariantGenerator {
   }
 
   private String responseText(JsonNode response) {
-    String outputText = response.path("output_text").asText();
+    String outputText = response.path("output_text").asString();
     if (!outputText.isBlank()) return outputText;
     StringBuilder text = new StringBuilder();
     for (JsonNode output : response.path("output")) {
       for (JsonNode content : output.path("content")) {
-        String value = content.path("text").asText();
+        String value = content.path("text").asString();
         if (!value.isBlank()) text.append(value);
       }
     }
-    if (text.length() == 0) throw new IllegalStateException("Responses API 未返回文本结果");
+    if (text.isEmpty()) throw new IllegalStateException("Responses API 未返回文本结果");
     return text.toString();
   }
 
@@ -187,26 +188,26 @@ public class AiVariantGenerator {
 
     JsonNode urlCitation = node.path("url_citation");
     if (urlCitation.isObject()) addCitation(urlCitation, node, result);
-    if ("url_citation".equals(node.path("type").asText())) addCitation(node, node, result);
+    if ("url_citation".equals(node.path("type").asString())) addCitation(node, node, result);
     if (isSearchResult(node)) addCitation(node, node, result);
 
     node.properties().forEach(field -> collectCitations(field.getValue(), result));
   }
 
   private boolean isSearchResult(JsonNode node) {
-    return "web_search_result".equals(node.path("type").asText())
-        || "search_result".equals(node.path("type").asText());
+    return "web_search_result".equals(node.path("type").asString())
+        || "search_result".equals(node.path("type").asString());
   }
 
   private void addCitation(JsonNode citation, JsonNode fallback, List<SearchEvidence> result) {
     if (result.size() >= 2) return;
-    String url = citation.path("url").asText(fallback.path("url").asText()).trim();
+    String url = citation.path("url").asString(fallback.path("url").asString()).trim();
     if (!isEvidenceUrl(url) || result.stream().anyMatch(existing -> existing.url().equals(url)))
       return;
-    String title = citation.path("title").asText(fallback.path("title").asText()).trim();
-    String snippet = citation.path("snippet").asText(fallback.path("snippet").asText()).trim();
+    String title = citation.path("title").asString(fallback.path("title").asString()).trim();
+    String snippet = citation.path("snippet").asString(fallback.path("snippet").asString()).trim();
     if (snippet.isBlank())
-      snippet = citation.path("content").asText(fallback.path("content").asText()).trim();
+      snippet = citation.path("content").asString(fallback.path("content").asString()).trim();
     result.add(new SearchEvidence(url, title, snippet));
   }
 
@@ -243,9 +244,11 @@ public class AiVariantGenerator {
     return Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
   }
 
-  private String abbreviate(String value, int maxLength) {
+  private String abbreviate(String value) {
     if (value == null) return "";
-    return value.length() <= maxLength ? value : value.substring(0, maxLength) + "…";
+    return value.length() <= MAX_LOGGED_RESPONSE_LENGTH
+        ? value
+        : value.substring(0, MAX_LOGGED_RESPONSE_LENGTH) + "…";
   }
 
   public record GeneratedVariant(
