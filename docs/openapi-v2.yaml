@@ -2,84 +2,461 @@ openapi: 3.0.3
 info:
   title: VibeLex Recognition API
   version: 2.0.0
+  description: VibeLex V2.0 识别、Elasticsearch 索引管理和索引同步任务接口契约，与 2026-07-28 的实现保持一致。
 paths:
   /api/v2/recognitions:
     post:
       summary: 识别文本中的已发布网络词条
-      description: 使用 V1 规则、ES 词法召回和语义候选完成词条识别。纯语义候选没有规则、词法或上下文佐证时不会返回。
+      description: 使用 V1 规则、Elasticsearch 词法召回和语义候选完成词条识别。纯语义候选无法锚定到输入原文时不会返回。
       requestBody:
         required: true
+        description: 需要识别的原始文本、语言以及本次识别使用的可选参数。
         content:
           application/json:
             schema:
-              type: object
-              required: [text]
-              properties:
-                text: {type: string, description: 待识别的原始文本。Unicode 码点 offset 均基于此文本计算。}
-                language_code: {type: string, default: zh-CN, description: 文本语言代码；V2 首期主要支持 zh-CN。}
-                options:
-                  type: object
-                  properties:
-                    min_confidence: {type: number, minimum: 0, maximum: 1, description: 最终结果最低置信度，默认使用服务端配置。}
-                    max_results: {type: integer, minimum: 1, maximum: 200, description: 最多返回的命中数量。}
-                    enable_semantic_recall: {type: boolean, description: 是否允许本次请求执行语义候选召回；服务端总开关关闭时无效。}
+              $ref: '#/components/schemas/RecognitionRequest'
       responses:
         '200':
-          description: 识别完成；degraded 为 true 时已降级到 V1 规则识别
+          description: 识别完成；响应中的 degraded 为 true 时，表示至少一个外部召回路径发生降级。
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  request_id: {type: string}
-                  matches: {type: array, items: {$ref: '#/components/schemas/Match'}}
-                  engine_version: {type: string, example: '2.0'}
-                  index_version: {type: string}
-                  degraded: {type: boolean}
-                  processed_at: {type: string, format: date-time}
-        '400': {description: 请求无效或 V2 未启用}
-        '413': {description: 文本超过配置上限}
+                $ref: '#/components/schemas/RecognitionResponse'
+        '400':
+          description: 请求字段无效、V2 未启用，或者关闭降级开关后的 Elasticsearch/embedding 调用失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '413':
+          description: 输入文本的 Unicode 码点数量超过服务端配置的长度上限。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/admin/recognition-v2/index:
     get:
-      summary: 查看 V2 ES 索引状态
-      description: 返回当前 Elasticsearch alias 的可用性和 HTTP 状态，供管理台或运维排查使用。
+      summary: 查看 V2 Elasticsearch 索引状态
+      description: 请求当前配置的 Elasticsearch 查询别名，并返回功能开关、HTTP 状态码和别名名称。
       responses:
         '200':
-          description: 当前索引状态
+          description: Elasticsearch 查询别名状态获取成功。
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  enabled: {type: boolean, description: ES 检索功能是否已启用。}
-                  status: {type: integer, description: 查询 ES alias 返回的 HTTP 状态码。}
-                  alias: {type: string, description: 当前查询使用的 ES 索引别名。}
+                $ref: '#/components/schemas/IndexStatus'
+        '400':
+          description: Elasticsearch 未启用、连接失败或状态查询失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/admin/recognition-v2/index/rebuild:
     post:
-      summary: 全量重建 V2 ES 义项索引
-      description: 从 MySQL 中正式发布或归档、且允许识别的词条重新生成向量，写入新物理索引并原子切换 alias。候选池不会进入索引。首次启用 V2 时需要执行一次。
+      summary: 全量重建 V2 Elasticsearch 义项索引
+      description: 当 V2、Elasticsearch 和 embedding 均启用时，同步创建时间戳物理索引、写入正式词条义项并切换查询别名；候选池不会进入索引。相关功能未启用时当前实现会直接返回 accepted=true，但不会执行重建。
       responses:
         '200':
-          description: 索引重建已完成
+          description: 全量重建调用已正常返回。
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  accepted: {type: boolean, description: 重建请求是否已被成功执行。}
+                $ref: '#/components/schemas/IndexRebuildResponse'
+        '400':
+          description: 创建索引、生成向量、写入文档或切换别名失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/recognition-v2/index/tasks:
+    get:
+      summary: 分页查询 Elasticsearch 增量同步任务
+      description: 查询正式词条发布、修改、停用或归档后产生的 Elasticsearch 增量同步任务及各状态数量。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 任务状态筛选。all=全部状态；pending=等待处理或等待下次重试；processing=正在处理；succeeded=同步成功；failed=达到最大重试次数后仍失败。
+          schema:
+            type: string
+            default: all
+            enum: [all, pending, processing, succeeded, failed]
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始；未传时默认为第 1 页，服务端会把小于 1 的值修正为 1。
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: 每页任务数量；未传时默认为 20，服务端最终会把该值限制在 10 到 100 之间。
+          schema:
+            type: integer
+            minimum: 1
+            default: 20
+      responses:
+        '200':
+          description: 同步任务分页数据和状态汇总获取成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTaskPage'
+  /api/admin/recognition-v2/index/tasks/{id}/retry:
+    post:
+      summary: 将失败的 Elasticsearch 同步任务重新入队
+      description: 仅允许把 failed 状态的任务重置为 pending，并清空旧错误和完成时间。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 需要重新入队的索引同步任务主键 ID。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 失败任务已重置并重新进入待处理队列。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTaskRetryResponse'
+        '400':
+          description: 任务不存在、任务状态不是 failed，或者重新入队操作失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
 components:
   schemas:
+    RecognitionRequest:
+      type: object
+      description: V2 词条识别请求。
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: 待识别的原始文本。start_offset、end_offset 和 matched_text 均以此字段为基准；offset 按 Unicode 码点计算，不是 UTF-8 字节下标或 UTF-16 下标。
+          example: 这薯片吃起来特别 treetree 的，真的破防了。
+        language_code:
+          type: string
+          default: zh-CN
+          description: 输入文本的语言代码。字段为空或未传时使用 zh-CN；V2.0 主要保证简体中文互联网语境的识别效果，当前实现不会拒绝其他字符串值。
+          example: zh-CN
+        options:
+          type: object
+          description: 本次识别的可选覆盖参数；未传时全部使用服务端 V2 配置。
+          properties:
+            min_confidence:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+              description: 最终匹配结果的最低置信度，包含边界值 0 和 1；低于该值的候选不会返回，未传时使用服务端 min-confidence 配置。
+              example: 0.6
+            max_results:
+              type: integer
+              minimum: 1
+              maximum: 200
+              description: 本次请求最多返回的匹配结果数量，允许范围为 1 到 200；未传时使用服务端 max-results 配置。
+              example: 20
+            enable_semantic_recall:
+              type: boolean
+              description: 是否允许本次请求执行 embedding 和 Elasticsearch kNN 语义召回。true=允许语义召回；false=本次请求关闭语义召回。即使传 true，服务端语义或 embedding 总开关关闭时也不会执行。
+              default: true
+    RecognitionResponse:
+      type: object
+      description: V2 词条识别成功响应。
+      required: [request_id, matches, engine_version, index_version, degraded, processed_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: 服务端为本次识别请求生成的唯一 UUID，用于关联响应和服务端诊断日志。
+          example: bfe4ae60-e186-4a60-a417-2b3a7ecb8c8c
+        matches:
+          type: array
+          description: 按置信度降序、起始位置升序处理后的最终词条命中列表；没有符合条件的结果时返回空数组。
+          items:
+            $ref: '#/components/schemas/Match'
+        engine_version:
+          type: string
+          enum: ['2.0']
+          description: 生成该响应的识别引擎协议版本。2.0=V1 规则、Elasticsearch 词法和语义候选进入统一校验链的 V2 引擎。
+          example: '2.0'
+        index_version:
+          type: string
+          description: 本次识别配置使用的 Elasticsearch 查询别名。当前实现返回别名而不是时间戳物理索引名称；默认值为 vibelex_sense_current。
+          example: vibelex_sense_current
+        degraded:
+          type: boolean
+          description: 本次识别是否发生外部召回降级。true=Elasticsearch 未启用/词法查询失败或 embedding/语义查询失败，并按配置继续使用可用路径；false=未触发降级逻辑。该字段不表示是否命中词条。
+          example: false
+        processed_at:
+          type: string
+          format: date-time
+          description: 服务端完成本次识别并构造响应时的 UTC 时间，采用 ISO-8601 格式。
+          example: '2026-07-28T08:30:00Z'
     Match:
       type: object
+      description: 一个通过召回、上下文评分、义项消歧、重叠处理和阈值裁剪的最终词条命中。
+      required: [meme_id, meme_code, canonical_term, ambiguous, matched_text, start_offset, end_offset, confidence, match_reason, policy]
       properties:
-        meme_id: {type: integer, format: int64, description: 词条主键 ID。}
-        sense_id: {type: integer, format: int64, nullable: true, description: 命中的义项 ID；未能确定义项时为空。}
-        canonical_term: {type: string, description: 词条标准名称。}
-        matched_text: {type: string, description: 在输入原文中实际命中的文本片段。}
-        start_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点起始偏移，包含该位置。}
-        end_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点结束偏移，不包含该位置。}
-        confidence: {type: number, description: 经规则、上下文、义项消歧和阈值裁剪后的最终置信度，范围 0 到 1。词法和语义来源用于候选准入与佐证，不会仅因被召回而直接抬高分数。}
+        meme_id:
+          type: integer
+          format: int64
+          description: 命中的正式词条在 MySQL meme_entries 表中的主键 ID。
+          example: 101
+        meme_code:
+          type: string
+          description: 命中词条的稳定业务编码，用于跨接口或跨环境识别词条，不等同于数据库主键。
+          example: MEME_000101
+        canonical_term:
+          type: string
+          description: 命中词条当前生效的标准名称；它可能与 matched_text 不同，因为原文可能命中的是变体或归一化写法。
+          example: 破防
+        sense_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 已确定义项在 meme_senses 表中的主键 ID；无法唯一确定义项、词条没有具体义项或结果被标记为歧义时返回 null。
+          example: 201
+        sense_no:
+          type: integer
+          nullable: true
+          description: 义项在当前词条内部的业务序号；已确定具体义项时返回对应序号，sense_id 为 null 时通常也为 null。
+          example: 1
+        ambiguous:
+          type: boolean
+          description: 是否存在无法消除的义项歧义。true=最高候选义项在置信度和义项证据上并列，sense_id/sense_no 返回 null；false=不存在并列歧义。
+          example: false
+        matched_text:
+          type: string
+          description: 从请求 text 中按 start_offset 和 end_offset 截取出的实际命中文本，保留原文大小写、空格和全半角形式。
+          example: 破防
+        start_offset:
+          type: integer
+          minimum: 0
+          description: matched_text 在请求 text 中的 Unicode 码点起始位置，包含该位置；与 end_offset 共同构成半开区间 [start_offset, end_offset)。
+          example: 20
+        end_offset:
+          type: integer
+          minimum: 1
+          description: matched_text 在请求 text 中的 Unicode 码点结束位置，不包含该位置；该值必须大于 start_offset。
+          example: 22
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 经过 V1 规则与上下文评分、义项消歧和裁剪后的最终置信度，范围为 0 到 1，并保留最多四位小数。Elasticsearch 召回分数不会直接作为该字段返回或直接抬高该值。
+          example: 0.6
+        match_reason:
+          type: array
+          description: 形成该结果的匹配或上下文原因集合。可能值为 exact_match=精确词面规则命中；normalized_match=变体或归一化词面命中；variant:spacing=去除空格后的变体命中；pinyin_match=拼音规则命中；regex_match=正则规则命中；lexical=Elasticsearch 词法候选命中；semantic=Elasticsearch 语义候选命中；positive_context=命中正向上下文；negative_context=命中负向上下文；entity_exclusion=命中实体排除规则。数组可能同时包含多个值。
+          items:
+            type: string
+            enum: [exact_match, normalized_match, 'variant:spacing', pinyin_match, regex_match, lexical, semantic, positive_context, negative_context, entity_exclusion]
+            description: 单个匹配原因枚举值；各值含义见 match_reason 字段说明。
         recall_sources:
           type: array
-          description: 最终结果所使用的候选召回来源。rule 为 V1 规则候选；lexical 为 ES 词法候选或语义候选所需的原文词面锚点；semantic 为 ES 向量语义候选。所有来源均须通过统一的上下文、义项、重叠和风险校验后才会返回。
-          items: {type: string, enum: [rule, lexical, semantic], description: rule 为 V1 规则；lexical 为 ES 词法；semantic 为 ES 向量语义候选。}
+          description: 候选召回来源集合，仅当本次调用有外部候选参与统一校验时输出。可能值为 rule=V1 规则、变体或正则召回；lexical=Elasticsearch 词法召回，或语义候选进入输出前所需的词面锚定佐证；semantic=embedding 加 Elasticsearch kNN 语义召回。数组可能同时包含多个值。
+          items:
+            type: string
+            enum: [rule, lexical, semantic]
+            description: 单个召回来源枚举值；rule=规则召回，lexical=词法召回或词面锚定，semantic=语义召回。
+        policy:
+          description: 命中词条当前生效的识别、展示、生成、推荐和审核策略。
+          allOf:
+            - $ref: '#/components/schemas/MatchPolicy'
+    MatchPolicy:
+      type: object
+      description: 最终命中词条的安全和使用策略快照。
+      required: [detect_enabled, display_enabled, generate_enabled, recommend_enabled, risk_level, moderation_policy]
+      properties:
+        detect_enabled:
+          type: boolean
+          description: 词条是否允许被识别。true=允许进入识别索引和识别结果；false=不应被识别。正常返回的 Match 通常为 true。
+        display_enabled:
+          type: boolean
+          description: 词条是否允许在面向用户的界面展示。true=允许展示；false=调用方应隐藏或按内部策略处理。
+        generate_enabled:
+          type: boolean
+          description: 词条是否允许被生成式功能主动生成。true=允许生成；false=禁止主动生成，但不必然禁止识别。
+        recommend_enabled:
+          type: boolean
+          description: 词条是否允许被推荐。true=允许推荐；false=禁止推荐。归档词条无论数据库原值如何均返回 false。
+        risk_level:
+          type: string
+          enum: [none, low, medium, high, restricted]
+          description: 词条风险等级。none=无明显风险；low=低风险；medium=中风险，需要结合上下文；high=高风险，不建议主动生成或推荐；restricted=受限，仅用于内部识别、审核或特定场景。
+        moderation_policy:
+          type: string
+          enum: [normal, log_only, manual_review, block, restricted]
+          description: 词条建议处理策略。normal=正常处理；log_only=仅记录，不进行拦截；manual_review=需要人工审核；block=拦截、不展示或不生成；restricted=限制在指定内部场景使用。
+    IndexStatus:
+      type: object
+      description: 当前 V2 Elasticsearch 查询别名的状态。
+      required: [enabled, status, alias]
+      properties:
+        enabled:
+          type: boolean
+          description: Elasticsearch 检索功能是否在服务端配置中启用。true=已启用；false=未启用。当前接口只有在能够执行状态查询时才会正常返回。
+        status:
+          type: integer
+          description: Elasticsearch 查询别名接口返回的原始 HTTP 状态码，例如 200 表示别名存在且查询成功，404 表示别名不存在。
+          example: 200
+        alias:
+          type: string
+          description: 服务端配置并用于 V2 查询的 Elasticsearch 索引别名。
+          example: vibelex_sense_current
+    IndexRebuildResponse:
+      type: object
+      description: Elasticsearch 全量索引重建接口的响应。
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          enum: [true]
+          description: 重建方法是否正常返回。当前成功响应固定为 true；它表示调用未抛出异常，不代表在相关功能关闭时一定创建了新物理索引。
+          example: true
+    IndexTaskPage:
+      type: object
+      description: Elasticsearch 增量同步任务的分页结果和全量状态汇总。
+      required: [items, page, size, totalElements, summary]
+      properties:
+        items:
+          type: array
+          description: 当前页的索引同步任务列表，按任务 ID 倒序排列；当前页没有数据时返回空数组。
+          items:
+            $ref: '#/components/schemas/IndexTask'
+        page:
+          type: integer
+          description: 服务端实际使用的当前页码，从 1 开始。
+          example: 1
+        size:
+          type: integer
+          description: 服务端实际使用的每页数量，范围为 10 到 100。
+          example: 20
+        totalElements:
+          type: integer
+          format: int64
+          description: 符合 status 筛选条件的任务总数，不是当前页任务数量。
+          example: 36
+        summary:
+          type: array
+          description: 不受当前 status 筛选影响的全量任务状态计数；数据库中没有某种状态时，该状态可能不会出现在数组中。
+          items:
+            $ref: '#/components/schemas/IndexTaskSummary'
+    IndexTaskSummary:
+      type: object
+      description: 一种索引同步任务状态及其任务数量。
+      required: [status, count]
+      properties:
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+          description: 被统计的任务状态。pending=等待处理或等待重试；processing=正在处理；succeeded=同步成功；failed=达到最大重试次数后仍失败。
+        count:
+          type: integer
+          format: int64
+          description: 当前 status 状态下的任务总数。
+          example: 12
+    IndexTask:
+      type: object
+      description: 一条正式词条到 Elasticsearch 派生索引的增量同步任务。
+      required: [id, meme_id, operation, status, retry_count, next_retry_at, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: index_sync_tasks 表中的任务主键 ID。
+          example: 1001
+        meme_id:
+          type: integer
+          format: int64
+          description: 需要同步或删除 Elasticsearch 文档的正式词条主键 ID。
+          example: 101
+        operation:
+          type: string
+          enum: [UPSERT, DELETE]
+          description: 索引操作类型。UPSERT=根据 MySQL 当前正式词条数据新增或覆盖 Elasticsearch 文档；DELETE=删除该词条对应的 Elasticsearch 文档。
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+          description: 任务当前状态。pending=等待处理或等待到 next_retry_at 后重试；processing=任务已被工作线程领取并正在执行；succeeded=最近一次同步成功；failed=自动重试达到上限后仍失败，可人工重新入队。
+        retry_count:
+          type: integer
+          minimum: 0
+          description: 当前任务已经累计的失败重试次数；新任务为 0，人工重新入队时重置为 0，达到 5 次失败后进入 failed。
+          example: 0
+        next_retry_at:
+          type: string
+          format: date-time
+          description: pending 任务允许被再次领取的最早数据库时间；首次入队通常为当前时间，失败重试时按退避策略推迟。
+        locked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: processing 任务最近一次被领取和锁定的数据库时间；尚未领取或已恢复的任务可以为 null，锁定超过 10 分钟会被视为陈旧任务并恢复为 pending。
+        last_error:
+          type: string
+          nullable: true
+          description: 最近一次同步失败的错误摘要，最长保留 2000 个字符；尚未失败或重试成功后为 null。
+        created_at:
+          type: string
+          format: date-time
+          description: 该词条同步任务首次创建的数据库时间。
+        updated_at:
+          type: string
+          format: date-time
+          description: 该任务操作、状态、重试次数或其他字段最近一次更新的数据库时间。
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次成功完成同步的数据库时间；任务尚未成功、重新入队或失败时可以为 null。
+    IndexTaskRetryResponse:
+      type: object
+      description: 失败索引任务重新入队成功后的响应。
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 已被重新入队的索引同步任务主键 ID。
+          example: 1001
+        status:
+          type: string
+          enum: [pending]
+          description: 重新入队后的任务状态，当前成功响应固定为 pending，表示等待工作线程处理。
+          example: pending
+    ProblemDetail:
+      type: object
+      description: Spring 标准问题详情错误响应；具体 HTTP 状态由调用的接口和失败原因决定。
+      properties:
+        type:
+          type: string
+          format: uri
+          description: 错误类型 URI。业务异常处理器当前使用 urn:vibelex:error:400 或 urn:vibelex:error:413；未处理异常可能使用 Spring 默认类型。
+          example: urn:vibelex:error:400
+        title:
+          type: string
+          description: HTTP 状态对应的简短错误标题，例如 Bad Request 或 Payload Too Large。
+          example: Bad Request
+        status:
+          type: integer
+          description: 与 HTTP 响应状态一致的数字状态码；当前文档化业务错误主要为 400=请求错误和 413=请求体文本过长。
+          example: 400
+        detail:
+          type: string
+          description: 面向调用方的具体错误原因，例如字段校验失败、V2 未启用或仅失败任务可重新入队。
+          example: V2 recognition engine is disabled
+        instance:
+          type: string
+          format: uri
+          description: 发生错误的请求实例 URI，通常是本次调用的接口路径；是否返回由 Spring 的错误响应配置决定。
+          example: /api/v2/recognitions

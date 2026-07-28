@@ -136,7 +136,7 @@ VibeLex 不只进行简单关键词匹配，也支持根据上下文判断一个
 
 应被识别为英文单词字面义，而不是网络梗。
 
-识别流水线（召回、打分、消歧、冲突处理）详见 [识别引擎 V1 规格](docs/recognition-engine-v1.md)。
+规则识别流水线详见 [识别引擎 V1 规格](docs/recognition-engine-v1.md)，Elasticsearch 词法/语义混合召回详见 [V2 识别与 ES 实现说明](docs/v2-recognition-and-es-design.md)。
 
 ---
 
@@ -331,7 +331,7 @@ V1 包含基础规则识别 API：变体与词面召回、上下文规则打分�
 
 ## 4. 技术栈
 
-当前规划：
+当前实现：
 
 ```text
 主开发语言：Java
@@ -346,10 +346,10 @@ Maven 入口：项目根目录 `pom.xml`
 存储引擎：InnoDB
 字符集：utf8mb4
 排序规则：utf8mb4_0900_ai_ci
-缓存与异步任务：V1 暂不引入；后续按实际性能或异步任务需求选择 Redis、RocketMQ 等基础设施
+缓存与异步任务：不依赖 Redis/MQ；V2 使用应用内定时任务处理 ES 索引同步队列
 身份标识：V1 使用固定操作者和 CurrentActorProvider；生产化后接入 IDSAAS
-语义检索：向量数据库或向量检索服务（规划）
-全文检索：OpenSearch / Elasticsearch（按数据规模引入）
+语义检索：BGE embedding 服务 + Elasticsearch dense_vector kNN
+全文检索：Elasticsearch BM25 / IK 中文分词
 ```
 
 初始化数据库建议：
@@ -443,17 +443,28 @@ Lex   = Lexicon，词库、词典、语言知识库
 
 数据库中的 `trend_status` 与 `heat_score` 为后续趋势模块预留字段。V1 的趋势状态统一为 `untracked`，不展示、不人工维护，也不使用这些字段参与列表或识别排序。
 
-### 8.2 后续规划
+### 8.2 V2.0 实施范围
+
+```text
+✅ 提供 POST /api/v2/recognitions 版本化识别接口
+✅ 融合 V1 规则、Elasticsearch 词法和语义候选召回
+✅ 复用 V1 归一化视图生成精确 Unicode 码点 offset
+✅ 提供 ES 全量重建、别名切换、增量同步、失败重试和任务管理页面
+✅ ES 或 embedding 异常时按配置使用仍可用的召回路径并标记 degraded
+✅ 管理页面提供 V2 命中测试、请求状态和响应耗时
+```
+
+### 8.3 后续规划
 
 ```text
 [ ] 建立自动候选发现与趋势采集流程
 [ ] 支持更多数据集导入和词条批量导出
 [ ] 建立词条质量评分机制
-[ ] 接入语义向量检索
-[ ] 扩展语义向量召回和更复杂的上下文解释
+[ ] 建立 V2 固定回归样例集和准确率评测基线
+[ ] 扩展更复杂的上下文解释
 [ ] 建立热度更新和过期词条复审机制
 [ ] 支持行业词包、私有词库和多租户能力
-[ ] 接入 OpenSearch 实现大规模全文检索
+[ ] 根据数据量和查询压力评估 ES 扩容、鉴权和高可用部署
 [ ] 接入 IDSAAS，实现生产级登录与接口权限控制
 [ ] 当单级审核不再满足需求时，引入审核任务、多人审核和质量抽检
 [ ] 当接入多个数据来源时，引入统一来源表、采集任务和 Connector 管理
@@ -476,6 +487,8 @@ Lex   = Lexicon，词库、词典、语言知识库
 | [dataset-import-v1.md](docs/dataset-import-v1.md) | V1.0 多来源数据集导入：Importer、字段映射、幂等与候选流程 |
 | [llm-variant-generation-v1.md](docs/llm-variant-generation-v1.md) | V1 AI 变体生成：按场景配置、提示词文件与发布流程 |
 | [system-architecture-v1.md](docs/system-architecture-v1.md) | 系统架构 V1：模块边界、数据流与实施路径 |
+| [v2-recognition-and-es-design.md](docs/v2-recognition-and-es-design.md) | V2 识别与 Elasticsearch 混合召回实现基线 |
+| [openapi-v2.yaml](docs/openapi-v2.yaml) | V2 识别、索引管理和同步任务 OpenAPI 契约 |
 
 
 ---
@@ -490,7 +503,7 @@ Lex   = Lexicon，词库、词典、语言知识库
 
 ## 11. 本地运行
 
-V1 后端代码位于 `src/main/java/`，管理页面位于 `src/main/resources/static/`。Spring Boot 会直接将静态资源打入可执行 JAR，不需要额外复制步骤。
+后端代码位于 `src/main/java/`，管理页面位于 `src/main/resources/static/`。生产构建会将静态资源直接打入 Spring Boot 可执行 JAR，不需要额外的前端构建步骤。
 
 ```bash
 mvn test
@@ -521,6 +534,14 @@ spring:
 java -jar target/vibelex-1.0.0-SNAPSHOT.jar
 ```
 
-打开 `http://localhost:8080/` 使用管理页面。V1 使用 `X-Actor-Id` 固定操作者标识，默认白名单为 `editor01`、`reviewer01`、`admin01`、`system`。Flyway 首次启动时执行 `V1__vibelex_schema.sql` 创建 11 张核心表，通过 `V2__candidate_direct_review_workflow.sql` 将候选表升级为支持人工录入和直接审核的结构，由 `V3__normalize_trend_status.sql` 将预留趋势状态统一为 `untracked / emerging / growing / stable / declining`，并由 `V4__expand_candidate_processing_note.sql` 扩展候选编辑内容的存储容量。
+使用 IDEA 直接启动 Spring Boot 时，可在 Run Configuration 中保持 `Working directory` 为 `$ProjectFileDir$`，并在 `Program arguments` 中加入：
+
+```text
+--spring.web.resources.static-locations=file:./src/main/resources/static/,classpath:/static/ --spring.web.resources.cache.period=0
+```
+
+此开发配置会直接读取前端源码；修改 HTML、CSS 或 JavaScript 后只需刷新浏览器，无需重启后端。该参数仅用于本地开发，不应加入生产启动配置。
+
+打开 `http://localhost:8080/` 使用管理页面。系统使用 `X-Actor-Id` 固定操作者标识，默认白名单为 `editor01`、`reviewer01`、`admin01`、`system`。Flyway 首次启动时依次创建核心业务表、候选审核流程和 V2 `index_sync_tasks` 索引同步任务表；迁移脚本位于 `src/main/resources/db/migration/`。
 
 管理页面当前支持 CHIME 与 Buzzword JSON 导入。将文件放入 `data/` 后选择对应数据源导入。

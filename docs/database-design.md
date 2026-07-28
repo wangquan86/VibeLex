@@ -140,6 +140,7 @@ USE vibelex_db;
 | 9 | `entry_change_sets` | 通用变更表 | 保留正式词条变更能力；不参与 V1 候选直接审核流程 |
 | 10 | `source_import_runs` | 导入运行表 | 保存 CHIME 文件、许可证核验、运行状态与统计 |
 | 11 | `candidate_entries` | 候选词条表 | 保存人工或数据文件导入候选、编辑内容、审核状态和正式词条关联 |
+| 12 | `index_sync_tasks` | ES 索引同步任务表 | 保存 V2 正式词条索引增量同步、重试和错误状态 |
 
 ---
 
@@ -930,6 +931,31 @@ CREATE TABLE candidate_entries (
 
 V2 在此基础上增加 `source_type`、`created_by`、`submitted_by`、`submitted_at`、`review_base_version`、`reviewed_by`、`reviewed_at`、`review_comment` 和 `published_meme_id`。`import_run_id` 与 `import_fingerprint` 允许为空，以支持人工录入。V4 将 `processing_note` 扩展为 `MEDIUMTEXT`，用于保存候选编辑内容，例如起源说明、例句、变体及 AI变体参考来源。详见相应 Flyway 迁移。
 
+## 6.12 ES 索引同步任务表：`index_sync_tasks`
+
+保存 V2 正式词条到 Elasticsearch 派生索引的增量同步任务。MySQL 词条事务提交后将任务写入该表，应用内定时任务领取并处理；同步失败不会回滚正式词条事务。
+
+```sql
+CREATE TABLE index_sync_tasks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    meme_id BIGINT UNSIGNED NOT NULL,
+    operation VARCHAR(16) NOT NULL COMMENT 'UPSERT 或 DELETE',
+    status VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending, processing, succeeded, failed',
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    locked_at DATETIME(3) NULL,
+    last_error TEXT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    finished_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_index_sync_tasks_meme_id (meme_id),
+    KEY idx_index_sync_tasks_claim (status, next_retry_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+同一 `meme_id` 同时只保留一个任务槽位；新变更通过 upsert 刷新操作和调度时间。任务最多自动尝试 5 次，`processing` 超过 10 分钟会恢复为 `pending`，最终失败后可从管理页面重新入队。该表不对 `meme_entries` 建外键，以便词条删除/异常恢复场景仍能保留 DELETE 同步任务。
+
 ---
 
 # 7. 枚举字典
@@ -1408,8 +1434,8 @@ safety_policy 风险等级与策略开关变更
 2. meme_tags
    将 JSON 标签拆成标准化标签表，支持标签运营和统计。
 
-3. meme_embeddings
-   存储义项向量或关联外部向量数据库，实现语义召回。
+3. recognition_evaluation_cases
+   当 V2 建立稳定评测集后，保存脱敏的输入、期望命中、版本和评测标签。
 
 4. meme_trend_metrics
    独立记录每日、每周、每月热度趋势。
@@ -1420,9 +1446,9 @@ safety_policy 风险等级与策略开关变更
 6. tenant_meme_entries
    支持企业客户私有词库、行业词包和多租户隔离。
 
-7. OpenSearch / Elasticsearch
-   支持大规模全文检索、分词检索和复杂筛选。
 ```
+
+V2 已使用 Elasticsearch 保存义项检索投影和向量；MySQL 仍为权威数据源，因此当前不新增 `meme_embeddings` 表。ES 鉴权、高可用和扩容属于部署演进，不改变本数据库事实模型。
 
 ---
 
@@ -1434,3 +1460,4 @@ safety_policy 风险等级与策略开关变更
 | V1.1 | 2026-07-15 | 增加 change set、CHIME 导入运行与候选表，统一操作者字段，补充义项风险覆盖和组合外键 |
 | V1.2 | 2026-07-16 | 候选表支持人工录入、直接编辑、提交锁定、审核退回和直接发布；候选审核不再使用 change set 草稿 |
 | V1.3 | 2026-07-16 | 趋势与生命周期枚举拆分；趋势默认改为 untracked，active/archived/obsolete 不再作为趋势状态 |
+| V2.0 | 2026-07-28 | 增加 `index_sync_tasks`，支持 Elasticsearch 增量同步、自动重试、失败记录和人工重新入队 |

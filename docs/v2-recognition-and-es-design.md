@@ -1,9 +1,10 @@
 # VibeLex V2：开放识别接口与 Elasticsearch 混合召回方案
 
 **产品版本：** V2.0  
-**状态：** 设计基线  
+**状态：** 实现基线（封板候选）
 **前置版本：** V1 规则识别引擎  
 **向量模型：** `bge-large-zh-v1.5`（通过现有 embedding 服务访问）
+**实现校准日期：** 2026-07-28
 
 ---
 
@@ -57,7 +58,7 @@ MySQL（权威词条数据） ──► 索引投影器 ──► Elasticsearch�
              候选合并 → 消歧 → 上下文规则/策略过滤 → 排序 → 响应
 ```
 
-ES 和 embedding 服务均为可选依赖：任何一个不可用时，V2 接口必须返回 V1 规则识别结果，不因外部检索依赖失败而整体失败。
+ES 和 embedding 服务均为可降级依赖：ES 不可用时返回 V1 规则结果；embedding 不可用时保留 V1 规则和 ES 词法路径。外部依赖失败是否降级由配置控制，发生降级时响应返回 `degraded: true`。
 
 ---
 
@@ -102,6 +103,7 @@ Content-Type: application/json
 
 ```json
 {
+  "request_id": "bfe4ae60-e186-4a60-a417-2b3a7ecb8c8c",
   "matches": [
     {
       "meme_id": 101,
@@ -109,31 +111,41 @@ Content-Type: application/json
       "canonical_term": "破防",
       "sense_id": 201,
       "sense_no": 1,
-      "match_type": "text_span",
+      "ambiguous": false,
       "matched_text": "破防",
       "start_offset": 7,
       "end_offset": 9,
       "confidence": 0.91,
-      "policy": { "risk_level": "low", "detect_enabled": true }
+      "match_reason": ["exact_match"],
+      "recall_sources": ["rule", "lexical"],
+      "policy": {
+        "detect_enabled": true,
+        "display_enabled": true,
+        "generate_enabled": true,
+        "recommend_enabled": true,
+        "risk_level": "low",
+        "moderation_policy": "allow"
+      }
     }
   ],
   "engine_version": "2.0",
-  "index_version": "v2-20260723-01",
+  "index_version": "vibelex_sense_current",
   "degraded": false,
   "processed_at": "2026-07-23T12:00:00Z"
 }
 ```
 
-规则或词法路径能够定位到具体词面的，返回 `match_type: text_span` 和精确 offset。纯语义路径不能伪装为词面命中。V2.0 中，纯语义召回仅作为内部候选，不直接对外输出；只有获得规则、词法或上下文规则佐证后，才可进入最终识别结果。未获佐证的候选必须记录诊断日志及淘汰原因。
+所有返回结果都对应可定位的原文片段，并包含精确 offset；接口不返回 `match_type`。纯语义路径不能伪装为词面命中：V2.0 中纯语义召回仅作为内部候选，只有能通过标准词或变体锚定到原文时才进入最终识别流程。`index_version` 当前返回配置的 ES 查询别名，而不是物理索引名称。
 
 ### 3.3 错误约定
 
-| HTTP 状态 | 错误码 | 情况 |
+错误响应使用 Spring `ProblemDetail`，`Content-Type` 为 `application/problem+json`。当前实现不另设业务错误码。
+
+| HTTP 状态 | `type` | 情况 |
 |---:|---|---|
-| 400 | `INVALID_REQUEST` | 空文本、字段类型错误、超出字段约束。 |
-| 413 | `TEXT_TOO_LONG` | 文本超过配置上限。 |
-| 422 | `UNSUPPORTED_LANGUAGE` | 当前语言无可用识别数据。 |
-| 500 | `INTERNAL_ERROR` | V1 核心识别异常。 |
+| 400 | `urn:vibelex:error:400` | 空文本、字段校验失败、V2 未启用，或关闭降级开关后的依赖调用失败。 |
+| 413 | `urn:vibelex:error:413` | 文本超过配置上限。 |
+| 500 | Spring 默认问题详情 | 未被业务异常处理器接管的服务端异常。 |
 
 ES/embedding 异常触发降级时不返回错误：返回 `200`，并以 `degraded: true` 表示本次仅使用可用路径。
 
@@ -164,7 +176,7 @@ V2 不使用 `meme_match_rules.semantic_threshold` 作为语义召回的开关�
 
 1. 以 `(meme_id, sense_id, 片段范围)` 合并三路候选；
 2. 复用 V1 上下文规则、义项消歧、重叠处理与安全策略；
-3. 规则召回享有最高基础权重；词法和语义分数只作为补强；
+3. ES 分数用于候选召回和语义最低分过滤，不直接抬高最终置信度；最终分数仍由 V1 规则与上下文评分链产生；
 4. 将结果裁剪到 `min_confidence` / `max_results`；
 5. 对外响应返回最终结果的 `recall_sources`；召回分数、未锚定候选和过滤原因仅记录在内部诊断日志。
 
@@ -201,21 +213,19 @@ V2 首期不承诺准确率数值。实际使用中可从抽查记录逐步积�
   "tags": ["情绪", "调侃"],
   "risk_level": "low",
   "detect_enabled": true,
-  "embedding_text": "词条：破防。变体：破大防；我破防了。释义：因情绪受到强烈冲击而失去心理防线。场景：评论区；直播。标签：情绪；调侃。",
   "embedding": [0.01],
-  "entry_revision": 8,
   "indexed_at": "2026-07-23T12:00:00Z"
 }
 ```
 
-`embedding_text` 是向量生成材料，可选择不在 `_source` 中保存；向量维度固定为 1024。
+`embedding_text` 由索引服务临时拼装并发送给 embedding 服务，不写入 ES `_source`；向量维度固定为 1024。
 
 ### 5.3 Mapping 原则
 
 - `canonical_term`、`variants` 使用中文文本分析器，并保留 keyword 子字段；
 - `definition`、`scenes`、`tags` 用于 BM25 词法召回；
 - `embedding` 使用 `dense_vector`，`dims: 1024`，`similarity: cosine`，启用向量索引；
-- `meme_id`、`sense_id`、状态、风险等级、版本字段使用 `keyword` / 数值字段；
+- `meme_id`、`sense_id` 使用数值字段，`meme_code`、`risk_level` 使用 keyword，`detect_enabled` 使用 boolean；
 - 建议使用索引别名 `vibelex_sense_current`。全量重建写入新索引，校验完成后原子切换别名，避免查询中断。
 
 ### 5.4 同步与重建
@@ -232,7 +242,7 @@ EntryPublished / EntryChanged / EntryDisabled
 ES upsert 或 delete
 ```
 
-需要提供：单词条重建、全量重建、失败记录、重试和索引状态查询。同步失败不能影响 MySQL 词条发布事务；后续重试必须可恢复。全量重建时使用新索引 + 别名切换。
+当前实现提供单词条同步、全量重建、失败记录、自动重试、人工重试和索引状态查询。词条事务提交后写入 `index_sync_tasks`，应用内定时任务批量领取并处理；最多自动尝试 5 次，失败任务可通过管理页面或接口重新入队。同步失败不回滚 MySQL 词条事务。全量重建为同步管理操作，使用时间戳物理索引并在完成后切换别名。
 
 ---
 
@@ -259,7 +269,7 @@ curl --location --request POST 'https://xmedia-t.api.leiniao.com/edu-embedding/e
 - 将服务方实际响应结构隔离在 `EmbeddingProvider` 内，不泄漏到识别业务；
 - 超时、网络错误、空向量或维度异常均作为 embedding 失败，触发本次请求降级。
 
-服务响应的具体 JSON 字段尚未提供，实施前须以真实响应补充适配器契约和自动化测试；不得猜测字段名。
+当前适配器读取响应中的 `vector` 数组和可选 `dimension` 字段，并同时校验声明维度、实际数组长度和配置维度。服务契约变化时应先更新适配器测试，不应把服务方响应结构泄漏到识别业务。
 
 ### 6.2 向量输入规范
 
@@ -298,38 +308,41 @@ vibelex:
 
 | 情况 | 行为 |
 |---|---|
-| `v2.enabled=false` | 不暴露或不路由 V2 新能力；V1 保持原样。 |
+| `v2.enabled=false` | V2 路由仍存在，但识别请求返回 400；V1 保持原样。 |
 | `semantic-recall-enabled=false` | V2 可使用规则/词法，跳过 embedding 和 kNN。 |
 | ES 查询失败 | 按配置退化为 V1 规则结果，响应 `degraded=true`。 |
 | embedding 调用失败 | 跳过本片段的语义召回，继续规则/词法路径。 |
 | ES 同步失败 | 不影响词条事实发布；记录失败并允许重试。 |
 
-每次识别写入结构化诊断日志，至少包含请求 ID、引擎版本、索引版本、各路径候选数量、语义相似度、最终入选结果、淘汰原因、耗时与是否降级。该信息首期仅供内部排查，不构成公开 API 契约。
+当前识别日志包含请求 ID、词法/语义候选数量、锚定候选数量、最终结果数量、词法查询单元、部分顶部 ES 命中和降级状态。召回分数、逐候选淘汰原因和服务端分阶段耗时尚未形成稳定日志契约；管理页面展示的是浏览器侧端到端响应耗时。
 
 ---
 
-## 9. 实施顺序与完成标准
+## 9. 实施结果与封板标准
 
-### 阶段 A：检索基础设施
+### 阶段 A：检索基础设施（已实现）
 
 1. 引入 ES 客户端与配置绑定；
-2. 实现 `EmbeddingProvider` 和对现有服务的响应契约测试；
+2. 实现 `EmbeddingProvider`、真实响应解析和 1024 维度校验；
 3. 创建 mapping、义项投影器、单条/全量重建与别名切换；
 4. 验证 MySQL 变更不受 ES 故障影响。
 
-### 阶段 B：识别编排
+### 阶段 B：识别编排（已实现）
 
 1. 新建 `/api/v2/recognitions`，保持 V1 API 不变；
 2. 接入 ES 词法候选和语义 kNN 候选；
 3. 实现候选融合、V1 规则复用、风险限制、输出模型和降级；
 4. 增加结构化诊断日志和运行开关。
 
-### 阶段 C：联调与上线
+### 阶段 C：封板验证
 
-1. 使用已有词条和日常典型文本进行人工抽查；
-2. 核对规则命中不回退、ES/embedding 故障可降级、索引可重建；
-3. 先关闭语义召回上线，再按配置灰度开启；
-4. 从抽查和真实调用中逐步积累 case，后续再决定是否建设评测集。
+1. 执行 `mvn test`，确保 V1 与现有业务回归通过；
+2. 使用管理页面验证规则命中、词法命中、归一化 offset、空结果和参数校验；
+3. 验证全量重建、别名状态、增量同步、失败任务重试以及 ES/embedding 故障降级；
+4. 记录封板时的 ES 版本、IK 插件版本、embedding 模型名和关键配置；
+5. 封板后新增固定 V2 回归样例集，再以补丁版本修复召回或文档缺陷。
+
+> 当前仓库尚无 `recognitionv2` 专用自动化测试类；`mvn test` 只能证明既有测试集未回归。正式标记“已封板”前，应完成并记录上述人工联调项，或补充最小的 V2 编排、降级和 offset 自动化测试。该项是当前最明确的剩余质量门禁。
 
 V2 完成不以预设准确率指标为条件。完成标准是：接口契约明确，已发布词条可稳定投影到 ES，三路候选能够接入同一流程，失败可降级，且出现误报或漏报时具备足够日志定位其来源和决策过程。
 

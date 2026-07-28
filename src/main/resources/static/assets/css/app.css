@@ -407,6 +407,15 @@ tbody tr { transition: background .15s; } tbody tr:hover { background: #fafaff; 
 .recognition-options-grid input:focus { border-color: #9fa7fa; box-shadow: 0 0 0 3px var(--primary-soft); }
 .recognition-options-grid .recognition-checkbox { display: flex; align-items: center; gap: 8px; align-self: end; height: 38px; font-weight: 400; }
 .panel-actions { padding: 0 22px 22px; text-align: right; }
+.recognition-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; border-top: 1px solid var(--border); padding: 10px 22px; background: #fbfcfe; color: var(--muted); font-size: var(--font-small); font-weight: 600; }
+.recognition-status-message { display: inline-flex; align-items: center; gap: 8px; }
+.recognition-status-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #a7afbf; }
+.recognition-status[data-state="requesting"] { color: var(--primary); }
+.recognition-status[data-state="requesting"] .recognition-status-dot { background: var(--primary); animation: recognition-pulse 1s ease-in-out infinite; }
+.recognition-status[data-state="success"] { color: var(--green); background: var(--green-soft); }
+.recognition-status[data-state="success"] .recognition-status-dot { background: var(--green); }
+.recognition-status[data-state="error"] { color: var(--red); background: var(--red-soft); }
+.recognition-status[data-state="error"] .recognition-status-dot { background: var(--red); }
 .result-panel pre { min-height: 352px; max-height: 520px; margin: 0; overflow: auto; background: #141d32; color: #bdc9e3; padding: 22px; font: 13px/1.7 "Cascadia Code", "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; }
 
 #toast { position: fixed; z-index: 60; right: 28px; bottom: 28px; display: none; min-width: 240px; max-width: 420px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 11px; background: #202940; color: white; padding: 13px 17px 13px 43px; box-shadow: 0 15px 36px rgb(18 25 47 / 25%); font-size: var(--font-body); animation: toast-in .25s ease; }
@@ -414,6 +423,7 @@ tbody tr { transition: background .15s; } tbody tr:hover { background: #fafaff; 
 .dialog-toast { position: fixed; z-index: 2; right: 28px; bottom: 28px; display: none; min-width: 240px; max-width: min(420px, calc(100vw - 40px)); border: 1px solid rgb(255 255 255 / 12%); border-radius: 11px; background: #202940; color: white; padding: 13px 17px 13px 43px; box-shadow: 0 15px 36px rgb(18 25 47 / 25%); font-size: var(--font-body); animation: toast-in .25s ease; }
 .dialog-toast::before { position: absolute; left: 17px; color: #70dfb8; content: "✓"; font-size: 16px; font-weight: 800; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes recognition-pulse { 50% { opacity: .35; transform: scale(.75); } }
 
 @media (max-width: 1180px) {
   .workspace { padding-left: 24px; padding-right: 24px; }

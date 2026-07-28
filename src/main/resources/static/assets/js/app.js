@@ -1352,17 +1352,37 @@ find("#run-import").addEventListener("click", async () => {
 });
 
 find("#recognize").addEventListener("click", async () => {
+  const minConfidence = Number(find("#recognition-min-confidence").value);
+  const maxResults = Number(find("#recognition-max-results").value);
+  if (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+    showToast("最低置信度必须在 0 到 1 之间");
+    return;
+  }
+  if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 200) {
+    showToast("最大结果数必须在 1 到 200 之间");
+    return;
+  }
+
+  const button = find("#recognize");
+  const status = find("#recognition-status");
+  const statusText = find("#recognition-status-text");
+  const durationText = find("#recognition-response-duration");
+  const output = find("#recognition-result");
+  const startedAt = performance.now();
+  const elapsedText = () => {
+    const milliseconds = performance.now() - startedAt;
+    return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(2)} s`;
+  };
+
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "请求中…";
+  status.dataset.state = "requesting";
+  statusText.textContent = "请求已发送，正在等待响应…";
+  durationText.textContent = "响应耗时：计时中…";
+  output.textContent = "正在请求识别服务，请稍候…";
+
   try {
-    const minConfidence = Number(find("#recognition-min-confidence").value);
-    const maxResults = Number(find("#recognition-max-results").value);
-    if (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1) {
-      showToast("最低置信度必须在 0 到 1 之间");
-      return;
-    }
-    if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 200) {
-      showToast("最大结果数必须在 1 到 200 之间");
-      return;
-    }
     const result = await api("/api/v2/recognitions", {
       method: "POST",
       body: JSON.stringify({
@@ -1375,9 +1395,23 @@ find("#recognize").addEventListener("click", async () => {
         },
       }),
     });
-    find("#recognition-result").textContent = JSON.stringify(result, null, 2);
+    const duration = elapsedText();
+    output.textContent = JSON.stringify(result, null, 2);
+    status.dataset.state = "success";
+    statusText.textContent = "响应成功，结果已更新";
+    durationText.textContent = `响应耗时：${duration}`;
+    showToast(`识别请求响应成功，耗时 ${duration}`);
   } catch (error) {
+    const duration = elapsedText();
+    status.dataset.state = "error";
+    statusText.textContent = "请求失败";
+    durationText.textContent = `响应耗时：${duration}`;
+    output.textContent = `请求失败：${error.message}`;
     showToast(error.message);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = "开始测试";
   }
 });
 
