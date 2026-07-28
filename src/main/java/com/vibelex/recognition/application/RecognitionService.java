@@ -47,6 +47,38 @@ public class RecognitionService {
    */
   public record Candidate(long memeId, Long senseId, int startOffset, int endOffset, String source) {}
 
+  /**
+   * Locates ES-nominated terms in original text with the same normalization views used by V1.
+   * This keeps V2 offsets lossless when the index term and input differ only in spacing, case,
+   * full-width characters or pinyin formatting.
+   */
+  public List<Candidate> anchorCandidates(
+      String text, String languageCode, long memeId, Long senseId, List<String> terms, String source) {
+    String language = languageCode == null ? "zh-CN" : languageCode;
+    Map<NormalizationProfile, NormalizedView> views = new EnumMap<>(NormalizationProfile.class);
+    for (NormalizationProfile profile : NormalizationProfile.values())
+      views.put(profile, NormalizedView.of(text, language, profile, normalizer));
+    Map<String, Candidate> result = new LinkedHashMap<>();
+    for (String term : terms) {
+      if (term == null || term.isBlank()) continue;
+      for (NormalizationProfile profile : NormalizationProfile.values()) {
+        String needle;
+        try {
+          needle = normalizer.normalize(term, language, profile);
+        } catch (IllegalArgumentException ex) {
+          continue;
+        }
+        NormalizedView view = views.get(profile);
+        for (int from = 0; (from = view.text.indexOf(needle, from)) >= 0; from += Math.max(1, needle.length())) {
+          NormalizedView.Span span = view.span(from, from + needle.length());
+          Candidate candidate = new Candidate(memeId, senseId, span.start(), span.end(), source);
+          result.putIfAbsent(span.start() + ":" + span.end(), candidate);
+        }
+      }
+    }
+    return List.copyOf(result.values());
+  }
+
   public Map<String, Object> recognize(Request request) {
     return recognizeWithCandidates(request, List.of());
   }
@@ -126,8 +158,8 @@ public class RecognitionService {
       dedup.merge(key, r, (left, right) -> left.withSources(right.sources));
     }
     List<Scored> scored = new ArrayList<>();
-    for (Raw r : dedup.values()) score(r, request.text(), data).forEach(scored::add);
-    List<Scored> disambiguated = disambiguate(scored);
+    for (Raw r : dedup.values()) scored.addAll(score(r, request.text(), data));
+    List<Scored> disambiguated = disambiguate(mergeSameSenseEvidence(scored));
     List<Scored> resolved = resolveOverlaps(disambiguated);
     List<Map<String, Object>> matches =
         resolved.stream()
@@ -231,22 +263,71 @@ public class RecognitionService {
       if (g.size() > 1
           && best.confidence == g.get(1).confidence
           && best.senseHits == g.get(1).senseHits)
-        best =
-            new Scored(
-                best.memeId,
-                null,
-                null,
-                best.start,
-                best.end,
-                best.confidence,
-                best.reasons,
-                best.senseHits,
-                best.priority,
-                true,
-                best.recallSources);
+        best = ambiguous(best, g);
       out.add(best);
     }
     return out;
+  }
+
+  /**
+   * A rule candidate without a sense expands to every sense during scoring. An ES candidate with a
+   * concrete sense can therefore produce a second Scored record for that *same* sense. Merge those
+   * records before disambiguation so corroborating evidence is not mistaken for sense ambiguity.
+   */
+  private List<Scored> mergeSameSenseEvidence(List<Scored> input) {
+    Map<String, Scored> merged = new LinkedHashMap<>();
+    for (Scored candidate : input) {
+      String key =
+          candidate.memeId
+              + ":"
+              + candidate.senseId
+              + ":"
+              + candidate.start
+              + ":"
+              + candidate.end;
+      merged.merge(key, candidate, this::mergeEvidence);
+    }
+    return new ArrayList<>(merged.values());
+  }
+
+  private Scored mergeEvidence(Scored left, Scored right) {
+    Set<String> reasons = new LinkedHashSet<>(left.reasons);
+    reasons.addAll(right.reasons);
+    Set<String> sources = new LinkedHashSet<>(left.recallSources);
+    sources.addAll(right.recallSources);
+    return new Scored(
+        left.memeId,
+        left.senseId,
+        left.senseNo,
+        left.start,
+        left.end,
+        Math.max(left.confidence, right.confidence),
+        List.copyOf(reasons),
+        Math.max(left.senseHits, right.senseHits),
+        Math.min(left.priority, right.priority),
+        left.ambiguous || right.ambiguous,
+        Set.copyOf(sources));
+  }
+
+  private Scored ambiguous(Scored best, List<Scored> candidates) {
+    Set<String> reasons = new LinkedHashSet<>();
+    Set<String> sources = new LinkedHashSet<>();
+    for (Scored candidate : candidates) {
+      reasons.addAll(candidate.reasons);
+      sources.addAll(candidate.recallSources);
+    }
+    return new Scored(
+        best.memeId,
+        null,
+        null,
+        best.start,
+        best.end,
+        best.confidence,
+        List.copyOf(reasons),
+        best.senseHits,
+        best.priority,
+        true,
+        Set.copyOf(sources));
   }
 
   private List<Scored> resolveOverlaps(List<Scored> input) {
@@ -276,7 +357,7 @@ public class RecognitionService {
     p.put("detect_enabled", e.detect());
     p.put("display_enabled", e.display());
     p.put("generate_enabled", e.generate());
-    p.put("recommend_enabled", e.status().equals("archived") ? false : e.recommend());
+    p.put("recommend_enabled", !e.status().equals("archived") && e.recommend());
     p.put("risk_level", e.risk());
     p.put("moderation_policy", e.moderation());
     Map<String, Object> m = new LinkedHashMap<>();
@@ -302,7 +383,7 @@ public class RecognitionService {
     if (pattern == null || pattern.isEmpty()) return r;
     for (int from = 0;
         (from = text.indexOf(pattern, from)) >= 0;
-        from += Math.max(1, pattern.length())) r.add(new int[] {from, from + pattern.length()});
+        from += pattern.length()) r.add(new int[] {from, from + pattern.length()});
     return r;
   }
 

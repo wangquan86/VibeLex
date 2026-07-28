@@ -577,7 +577,8 @@ async function openCandidateEditor(candidateId = null) {
     if (candidateId) {
       const row = await api(`/api/admin/candidates/${candidateId}`);
       if (!["editing", "returned"].includes(row.status)) {
-        throw new Error("审核中的候选词条不允许编辑");
+        showToast("无法打开编辑器：审核中的候选词条不允许编辑");
+        return;
       }
       const note = candidateNote(row);
       find("#candidate-editor-import-provenance").hidden = false;
@@ -1352,13 +1353,26 @@ find("#run-import").addEventListener("click", async () => {
 
 find("#recognize").addEventListener("click", async () => {
   try {
-    const result = await api("/api/recognize", {
+    const minConfidence = Number(find("#recognition-min-confidence").value);
+    const maxResults = Number(find("#recognition-max-results").value);
+    if (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+      showToast("最低置信度必须在 0 到 1 之间");
+      return;
+    }
+    if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 200) {
+      showToast("最大结果数必须在 1 到 200 之间");
+      return;
+    }
+    const result = await api("/api/v2/recognitions", {
       method: "POST",
       body: JSON.stringify({
         text: find("#recognition-text").value,
-        language_code: "zh-CN",
-        scene: "comment",
-        options: { min_confidence: 0.6, max_results: 20 },
+        language_code: find("#recognition-language-code").value.trim() || "zh-CN",
+        options: {
+          min_confidence: minConfidence,
+          max_results: maxResults,
+          enable_semantic_recall: find("#recognition-enable-semantic").checked,
+        },
       }),
     });
     find("#recognition-result").textContent = JSON.stringify(result, null, 2);

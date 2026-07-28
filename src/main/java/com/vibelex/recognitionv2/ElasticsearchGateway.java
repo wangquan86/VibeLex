@@ -8,6 +8,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +68,39 @@ public class ElasticsearchGateway {
     request("DELETE", "/" + index + "/_doc/" + encode(id), null, false);
   }
 
-  public List<Hit> lexical(String query) {
+  /** Executes all lexical query units in one ES _msearch round trip. */
+  public List<Hit> lexical(Collection<String> queries) {
+    if (queries.isEmpty()) return List.of();
+    StringBuilder ndjson = new StringBuilder();
+    try {
+      for (String query : queries) {
+        if (query == null || query.isBlank()) continue;
+        ndjson.append(mapper.writeValueAsString(Map.of("index", properties.getElasticsearch().getIndexAlias())));
+        ndjson.append('\n');
+        ndjson.append(mapper.writeValueAsString(lexicalPayload(query)));
+        ndjson.append('\n');
+      }
+    } catch (Exception ex) {
+      throw new IllegalStateException("Failed to build ES lexical multi-search request", ex);
+    }
+    if (ndjson.isEmpty()) return List.of();
+    HttpResponse<String> response = requestMsearch(ndjson.toString());
+    try {
+      List<Hit> result = new ArrayList<>();
+      for (JsonNode item : mapper.readTree(response.body()).path("responses")) {
+        if (item.has("error"))
+          throw new IllegalStateException("ES lexical multi-search item failed: " + item.path("error"));
+        result.addAll(hits(item));
+      }
+      return result;
+    } catch (Exception ex) {
+      throw ex instanceof IllegalStateException failure
+          ? failure
+          : new IllegalStateException("Failed to parse ES lexical multi-search response", ex);
+    }
+  }
+
+  private Map<String, Object> lexicalPayload(String query) {
     Map<String, Object> multiMatch =
         Map.of(
             "multi_match",
@@ -84,10 +117,8 @@ public class ElasticsearchGateway {
             List.of(Map.of("term", Map.of("detect_enabled", true))),
             "must",
             List.of(multiMatch));
-    Map<String, Object> q =
-        Map.of(
-            "size", properties.getElasticsearch().getLexicalTopK(), "query", Map.of("bool", bool));
-    return search(q);
+    return Map.of(
+        "size", properties.getElasticsearch().getLexicalTopK(), "query", Map.of("bool", bool));
   }
 
   public List<Hit> knn(List<Float> vector) {
@@ -131,28 +162,52 @@ public class ElasticsearchGateway {
             payload,
             true);
     try {
-      JsonNode hits = mapper.readTree(response.body()).path("hits").path("hits");
-      List<Hit> result = new ArrayList<>();
-      for (JsonNode hit : hits) {
-        JsonNode source = hit.path("_source");
-        JsonNode sense = source.path("sense_id");
-        result.add(
-            new Hit(
-                source.path("meme_id").asLong(),
-                sense.isNull() || sense.isMissingNode() ? null : sense.asLong(),
-                source.path("canonical_term").asText(),
-                strings(source.path("variants")),
-                hit.path("_score").asDouble()));
-      }
-      return result;
+      return hits(mapper.readTree(response.body()));
     } catch (Exception e) {
       throw new IllegalStateException("解析 ES 查询响应失败", e);
     }
   }
 
+  private List<Hit> hits(JsonNode response) {
+    List<Hit> result = new ArrayList<>();
+    for (JsonNode hit : response.path("hits").path("hits")) {
+      JsonNode source = hit.path("_source");
+      JsonNode sense = source.path("sense_id");
+      result.add(
+          new Hit(
+              source.path("meme_id").asLong(),
+              sense.isNull() || sense.isMissingNode() ? null : sense.asLong(),
+              source.path("canonical_term").asString(),
+              strings(source.path("variants")),
+              hit.path("_score").asDouble()));
+    }
+    return result;
+  }
+
+  private HttpResponse<String> requestMsearch(String body) {
+    if (!enabled()) throw new IllegalStateException("Elasticsearch is disabled");
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(base() + "/_msearch"))
+              .timeout(Duration.ofMillis(properties.getElasticsearch().getRequestTimeoutMillis()))
+              .header("Content-Type", "application/x-ndjson")
+              .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+              .build();
+      HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() / 100 != 2)
+        throw new IllegalStateException(
+            "ES lexical multi-search failed " + response.statusCode() + ": " + response.body());
+      return response;
+    } catch (Exception ex) {
+      throw ex instanceof IllegalStateException failure
+          ? failure
+          : new IllegalStateException("Failed to call Elasticsearch lexical multi-search", ex);
+    }
+  }
+
   private List<String> strings(JsonNode node) {
     List<String> r = new ArrayList<>();
-    if (node.isArray()) for (JsonNode x : node) r.add(x.asText());
+    if (node.isArray()) for (JsonNode x : node) r.add(x.asString());
     return r;
   }
 
@@ -161,11 +216,11 @@ public class ElasticsearchGateway {
     props.put("meme_id", Map.of("type", "long"));
     props.put("sense_id", Map.of("type", "long"));
     props.put("meme_code", Map.of("type", "keyword"));
-    props.put("canonical_term", text("ik_max_word", "ik_smart"));
-    props.put("variants", text("ik_max_word", "ik_smart"));
-    props.put("definition", text("ik_max_word", "ik_smart"));
-    props.put("tags", text("ik_max_word", "ik_smart"));
-    props.put("scenes", text("ik_max_word", "ik_smart"));
+    props.put("canonical_term", analyzedText());
+    props.put("variants", analyzedText());
+    props.put("definition", analyzedText());
+    props.put("tags", analyzedText());
+    props.put("scenes", analyzedText());
     props.put("detect_enabled", Map.of("type", "boolean"));
     props.put("risk_level", Map.of("type", "keyword"));
     props.put("indexed_at", Map.of("type", "date"));
@@ -187,14 +242,14 @@ public class ElasticsearchGateway {
         Map.of("dynamic", "strict", "properties", props));
   }
 
-  private Map<String, Object> text(String analyzer, String searchAnalyzer) {
+  private Map<String, Object> analyzedText() {
     return Map.of(
         "type",
         "text",
         "analyzer",
-        analyzer,
+        "ik_max_word",
         "search_analyzer",
-        searchAnalyzer,
+        "ik_smart",
         "fields",
         Map.of("keyword", Map.of("type", "keyword", "ignore_above", 256)));
   }

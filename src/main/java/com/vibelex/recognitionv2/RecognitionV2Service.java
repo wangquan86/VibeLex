@@ -1,6 +1,8 @@
 package com.vibelex.recognitionv2;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vibelex.candidatediscovery.domain.NormalizationProfile;
+import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.recognition.application.RecognitionService;
 import jakarta.validation.constraints.NotBlank;
 import java.time.Instant;
@@ -23,16 +25,19 @@ public class RecognitionV2Service {
   private final RecognitionV2Properties properties;
   private final ElasticsearchGateway es;
   private final EmbeddingProvider embedding;
+  private final TermNormalizer normalizer;
 
   public RecognitionV2Service(
       RecognitionService v1,
       RecognitionV2Properties properties,
       ElasticsearchGateway es,
-      EmbeddingProvider embedding) {
+      EmbeddingProvider embedding,
+      TermNormalizer normalizer) {
     this.v1 = v1;
     this.properties = properties;
     this.es = es;
     this.embedding = embedding;
+    this.normalizer = normalizer;
   }
 
   public record Options(
@@ -66,12 +71,24 @@ public class RecognitionV2Service {
 
     if (es.enabled()) {
       try {
-        for (String fragment : fragments(request.text())) {
-          for (ElasticsearchGateway.Hit hit : es.lexical(fragment)) {
-            lexicalCount++;
-            addAnchoredCandidate(request.text(), hit, "lexical", candidateSources);
-          }
+        List<String> queryUnits = lexicalQueries(request);
+        List<ElasticsearchGateway.Hit> hits = es.lexical(queryUnits);
+        lexicalCount = hits.size();
+        for (ElasticsearchGateway.Hit hit : hits) {
+          addAnchoredCandidate(request, hit, "lexical", candidateSources);
         }
+        log.info(
+            "V2 lexical recall queryUnits={} hits={} anchoredCandidates={} units={}",
+            queryUnits.size(),
+            lexicalCount,
+            candidateSources.size(),
+            queryUnits);
+        log.info(
+            "V2 lexical recall topHits={}",
+            hits.stream()
+                .limit(20)
+                .map(hit -> hit.memeId() + ":" + hit.senseId())
+                .toList());
       } catch (RuntimeException ex) {
         if (!properties.isFallbackToV1OnSearchFailure()) throw ex;
         degraded = true;
@@ -84,7 +101,7 @@ public class RecognitionV2Service {
             for (ElasticsearchGateway.Hit hit : es.knn(embedding.embed(fragment))) {
               if (hit.score() >= properties.getElasticsearch().getMinimumSemanticScore()) {
                 semanticCount++;
-                addAnchoredCandidate(request.text(), hit, "semantic", candidateSources);
+                addAnchoredCandidate(request, hit, "semantic", candidateSources);
               }
             }
           }
@@ -131,30 +148,51 @@ public class RecognitionV2Service {
 
   /**
    * ES is allowed to nominate an entry, not invent a result span. Only a canonical term or variant
-   * that can be located in the original input becomes an external candidate. Consequently a pure
-   * semantic hit is discarded; an anchored semantic hit carries lexical corroboration as well.
+   * that can be located through the V1 normalization views becomes an external candidate.
+   * Consequently a pure semantic hit is discarded; an anchored semantic hit carries lexical
+   * corroboration as well.
    */
   private void addAnchoredCandidate(
-      String text, ElasticsearchGateway.Hit hit, String source, Map<String, Set<String>> candidates) {
+      Request request, ElasticsearchGateway.Hit hit, String source, Map<String, Set<String>> candidates) {
     List<String> terms = new ArrayList<>();
     terms.add(hit.canonicalTerm());
     terms.addAll(hit.variants());
-    for (String term : terms) {
-      if (term == null || term.isBlank()) continue;
-      for (int from = 0; (from = text.indexOf(term, from)) >= 0; from += Math.max(1, term.length())) {
-        int start = text.codePointCount(0, from);
-        int end = text.codePointCount(0, from + term.length());
-        String key =
-            hit.memeId()
-                + ":"
-                + (hit.senseId() == null ? "" : hit.senseId())
-                + ":"
-                + start
-                + ":"
-                + end;
-        Set<String> sources = candidates.computeIfAbsent(key, ignored -> new LinkedHashSet<>());
-        sources.add(source);
-        if ("semantic".equals(source)) sources.add("lexical");
+    for (RecognitionService.Candidate candidate :
+        v1.anchorCandidates(
+            request.text(), request.languageCode(), hit.memeId(), hit.senseId(), terms, source)) {
+      String key =
+          candidate.memeId()
+              + ":"
+              + (candidate.senseId() == null ? "" : candidate.senseId())
+              + ":"
+              + candidate.startOffset()
+              + ":"
+              + candidate.endOffset();
+      Set<String> sources = candidates.computeIfAbsent(key, ignored -> new LinkedHashSet<>());
+      sources.add(source);
+      if ("semantic".equals(source)) sources.add("lexical");
+    }
+  }
+
+  /** Builds a bounded set of sentence and short-clause lexical query units for one _msearch call. */
+  private List<String> lexicalQueries(Request request) {
+    String language = request.languageCode() == null ? "zh-CN" : request.languageCode();
+    Set<String> queries = new LinkedHashSet<>();
+    for (String sentence : fragments(request.text())) {
+      addQueryForms(queries, sentence, language);
+      for (String clause : sentence.split("(?<=[,，、;；])")) addQueryForms(queries, clause, language);
+    }
+    return queries.stream().limit(12).toList();
+  }
+
+  private void addQueryForms(Set<String> queries, String value, String language) {
+    String trimmed = value.replaceAll("^[\\s,，、;；]+|[\\s,，、;；。！？!?]+$", "");
+    if (trimmed.isBlank()) return;
+    queries.add(trimmed);
+    for (NormalizationProfile profile : List.of(NormalizationProfile.BASE, NormalizationProfile.SPACING)) {
+      try {
+        queries.add(normalizer.normalize(trimmed, language, profile));
+      } catch (IllegalArgumentException ignored) {
       }
     }
   }
@@ -187,7 +225,7 @@ public class RecognitionV2Service {
 
   private List<String> fragments(String text) {
     List<String> result = new ArrayList<>();
-    for (String part : text.split("(?<=[。！？!?\\n])")) {
+    for (String part : text.split("(?<=[\\u3002\\uFF01\\uFF1F!?\\n])")) {
       if (!part.isBlank()) {
         result.add(
             part.length() > properties.getSentenceMaxCharacters()

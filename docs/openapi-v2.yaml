@@ -78,7 +78,7 @@ components:
         matched_text: {type: string, description: 在输入原文中实际命中的文本片段。}
         start_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点起始偏移，包含该位置。}
         end_offset: {type: integer, description: 命中文本在原文中的 Unicode 码点结束偏移，不包含该位置。}
-        confidence: {type: number, description: 综合规则、上下文和召回证据后的最终置信度，范围 0 到 1。}
+        confidence: {type: number, description: 经规则、上下文、义项消歧和阈值裁剪后的最终置信度，范围 0 到 1。词法和语义来源用于候选准入与佐证，不会仅因被召回而直接抬高分数。}
         recall_sources:
           type: array
           description: 最终结果所使用的候选召回来源。rule 为 V1 规则候选；lexical 为 ES 词法候选或语义候选所需的原文词面锚点；semantic 为 ES 向量语义候选。所有来源均须通过统一的上下文、义项、重叠和风险校验后才会返回。
