@@ -46,12 +46,11 @@ public class RecognitionV2Service {
       @JsonProperty("enable_semantic_recall") Boolean enableSemanticRecall) {}
 
   public record Request(
-      @NotBlank String text,
-      @JsonProperty("language_code") String languageCode,
-      Options options) {}
+      @NotBlank String text, @JsonProperty("language_code") String languageCode, Options options) {}
 
   public Map<String, Object> recognize(Request request) {
-    if (!properties.isEnabled()) throw new IllegalStateException("V2 recognition engine is disabled");
+    if (!properties.isEnabled())
+      throw new IllegalStateException("V2 recognition engine is disabled");
     if (request.text().codePointCount(0, request.text().length())
         > properties.getSentenceMaxCharacters()) throw new TextTooLongException();
     double min =
@@ -85,10 +84,7 @@ public class RecognitionV2Service {
             queryUnits);
         log.info(
             "V2 lexical recall topHits={}",
-            hits.stream()
-                .limit(20)
-                .map(hit -> hit.memeId() + ":" + hit.senseId())
-                .toList());
+            hits.stream().limit(20).map(hit -> hit.memeId() + ":" + hit.senseId()).toList());
       } catch (RuntimeException ex) {
         if (!properties.isFallbackToV1OnSearchFailure()) throw ex;
         degraded = true;
@@ -118,7 +114,10 @@ public class RecognitionV2Service {
     Map<String, Object> base =
         v1.recognizeWithCandidates(
             new RecognitionService.Request(
-                request.text(), request.languageCode(), null, new RecognitionService.Options(min, max)),
+                request.text(),
+                request.languageCode(),
+                null,
+                new RecognitionService.Options(min, max)),
             flatten(candidateSources));
     List<Map<String, Object>> matches = copyMatches(base.get("matches"));
     Map<String, Object> out = new LinkedHashMap<>();
@@ -153,7 +152,10 @@ public class RecognitionV2Service {
    * corroboration as well.
    */
   private void addAnchoredCandidate(
-      Request request, ElasticsearchGateway.Hit hit, String source, Map<String, Set<String>> candidates) {
+      Request request,
+      ElasticsearchGateway.Hit hit,
+      String source,
+      Map<String, Set<String>> candidates) {
     List<String> terms = new ArrayList<>();
     terms.add(hit.canonicalTerm());
     terms.addAll(hit.variants());
@@ -174,7 +176,9 @@ public class RecognitionV2Service {
     }
   }
 
-  /** Builds a bounded set of sentence and short-clause lexical query units for one _msearch call. */
+  /**
+   * Builds a bounded set of sentence and short-clause lexical query units for one _msearch call.
+   */
   private List<String> lexicalQueries(Request request) {
     String language = request.languageCode() == null ? "zh-CN" : request.languageCode();
     Set<String> queries = new LinkedHashSet<>();
@@ -189,7 +193,8 @@ public class RecognitionV2Service {
     String trimmed = value.replaceAll("^[\\s,，、;；]+|[\\s,，、;；。！？!?]+$", "");
     if (trimmed.isBlank()) return;
     queries.add(trimmed);
-    for (NormalizationProfile profile : List.of(NormalizationProfile.BASE, NormalizationProfile.SPACING)) {
+    for (NormalizationProfile profile :
+        List.of(NormalizationProfile.BASE, NormalizationProfile.SPACING)) {
       try {
         queries.add(normalizer.normalize(trimmed, language, profile));
       } catch (IllegalArgumentException ignored) {

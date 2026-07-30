@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#14213d">
     <title>VibeLex 管理平台</title>
-    <link rel="stylesheet" href="/assets/css/app.css?v=20260723-provenance-labels">
+    <link rel="stylesheet" href="/assets/css/app.css?v=20260730-overview-refresh">
   </head>
   <body>
     <header class="topbar">
@@ -34,6 +34,7 @@
         <button data-page="overview" class="active"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg><span>工作台概览</span></button>
         <span class="nav-group">数据治理</span>
         <button data-page="imports"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg><span>CHIME 数据导入</span></button>
+        <button data-page="crawler"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5V5Zm3 3h8v3H8V8Zm0 6h5m4-1v4m-2-2h4"/></svg><span>网站词条爬取</span></button>
         <button data-page="candidates"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm4 4h8M8 13h5"/></svg><span>候选词条池</span><i class="nav-dot"></i></button>
         <button data-page="reviews"><svg viewBox="0 0 24 24"><path d="M9 4h6l1 2h3v14H5V6h3l1-2Zm0 9 2 2 4-5"/></svg><span>候选审核中心</span></button>
         <button data-page="entries"><svg viewBox="0 0 24 24"><path d="M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4Zm3 5h7m-7 4h7"/></svg><span>正式词条管理</span></button>
@@ -49,17 +50,18 @@
     <main class="workspace">
       <section id="overview" class="page active">
         <div class="overview-hero">
-          <div class="hero-copy"><span class="eyebrow">OVERVIEW</span><h1>早上好，欢迎回到 VibeLex</h1><p>集中管理数据导入、候选清洗、内容审核与词条发布，让知识治理流程清晰可控。</p><button class="hero-button" data-page-link="imports"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>发起数据导入</button></div>
-          <div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="hero-symbol">VL</div><span class="hero-chip chip-one">数据归一化</span><span class="hero-chip chip-two">内容审核</span></div>
+          <div class="hero-copy"><span class="eyebrow">OVERVIEW</span><h1><span id="overview-greeting">你好</span>，欢迎回到 VibeLex</h1><p>集中管理文件导入、网站词条爬取、候选编辑、内容审核与词条发布，让知识治理流程清晰可控。</p><div class="hero-actions"><button class="hero-button" data-page-link="imports"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 18h14"/></svg>文件数据导入</button><button class="hero-button hero-button--secondary" data-page-link="crawler"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5V5Zm3 3h8v3H8V8Zm0 6h5m4-1v4m-2-2h4"/></svg>网站词条爬取</button><button class="hero-button hero-button--secondary" data-page-link="candidates"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm4 4h8M8 13h5"/></svg>候选词条池</button></div></div>
+          <div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="hero-symbol">VL</div><span class="hero-chip chip-one">多源采集</span><span class="hero-chip chip-two">审核发布</span></div>
         </div>
+        <div class="overview-tabs" role="tablist" aria-label="概览统计范围"><button type="button" class="active" role="tab" aria-selected="true" data-overview-tab="governance">治理总览</button><button type="button" role="tab" aria-selected="false" data-overview-tab="imports">文件导入</button><button type="button" role="tab" aria-selected="false" data-overview-tab="crawler">网站爬取</button></div>
         <div id="stats" class="stat-grid"></div>
         <div class="content-panel process-panel">
-          <div class="panel-heading"><div><span class="panel-kicker">WORKFLOW</span><strong>V1 数据治理流程</strong></div><span>外部数据经人工审核后进入正式知识库</span></div>
+          <div class="panel-heading"><div><span class="panel-kicker">WORKFLOW</span><strong>内容治理流程</strong></div><span>多来源内容经人工审核后进入正式知识库</span></div>
           <div class="process-flow">
-            <div><b>01</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 18h14"/></svg></span><strong>文件导入</strong><span>许可证与哈希校验</span></div><i></i>
-            <div><b>02</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="m4 7 8-4 8 4-8 4-8-4Zm0 5 8 4 8-4M4 17l8 4 8-4"/></svg></span><strong>候选清洗</strong><span>归一化与重复提示</span></div><i></i>
-            <div><b>03</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M9 4h6l1 2h3v14H5V6h3l1-2Zm0 9 2 2 4-5"/></svg></span><strong>编辑审核</strong><span>完整快照与风险策略</span></div><i></i>
-            <div><b>04</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v5c0 4.6 3.2 7.5 8 9 4.8-1.5 8-4.4 8-9V7l-8-4Zm-3 9 2 2 4-5"/></svg></span><strong>正式发布</strong><span>版本记录与识别索引</span></div>
+            <div><b>01</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 18h14"/></svg></span><strong>多源采集</strong><span>文件导入 · 网站爬取 · 人工录入</span></div><i></i>
+            <div><b>02</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="m4 7 8-4 8 4-8 4-8-4Zm0 5 8 4 8-4M4 17l8 4 8-4"/></svg></span><strong>候选编辑</strong><span>归一化 · 判重 · 内容完善</span></div><i></i>
+            <div><b>03</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M9 4h6l1 2h3v14H5V6h3l1-2Zm0 9 2 2 4-5"/></svg></span><strong>人工审核</strong><span>审核意见 · 风险检查</span></div><i></i>
+            <div><b>04</b><span class="process-icon"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v5c0 4.6 3.2 7.5 8 9 4.8-1.5 8-4.4 8-9V7l-8-4Zm-3 9 2 2 4-5"/></svg></span><strong>发布入库</strong><span>版本记录 · 识别索引同步</span></div>
           </div>
         </div>
       </section>
@@ -68,6 +70,14 @@
         <div class="page-heading"><div><span class="eyebrow">DATA INGESTION</span><h1>数据来源导入</h1><p>为不同来源选择独立解析器，统一导入候选词条池。</p></div></div>
         <div class="filter-panel import-form"><label>数据来源<select id="import-source"></select></label><label>数据文件<select id="import-file"></select></label><label>来源版本<input id="source-version" value="manual-local"></label><label>许可状态<select id="license-status"><option value="approved">已批准</option><option value="pending">待核验</option><option value="rejected">已拒绝</option><option value="expired">已过期</option></select></label><label class="grow">权利校验说明<input id="rights-note" value="Manual import rights reviewed"></label><button id="refresh-files" class="secondary-button">刷新</button><button id="run-import" class="primary-button">开始导入</button><p id="import-progress" class="import-progress" role="status" aria-live="polite" hidden></p></div>
         <div class="content-panel"><div class="panel-heading"><div><span class="panel-kicker">HISTORY</span><strong>导入运行记录</strong></div><span>最近 100 次运行</span></div><div id="imports-table" class="table-host"></div></div>
+      </section>
+
+      <section id="crawler" class="page">
+        <div class="page-heading"><div><span class="eyebrow">SOURCE SYNC</span><h1>网站词条爬取</h1><p>检查点为空时同步全部词条，之后自动从上次完成的位置继续。</p></div><div class="heading-actions"><label class="heading-select">同步来源<select id="crawl-active-source"></select></label><button id="crawl-refresh" class="secondary-button">刷新</button><button id="crawl-sync" class="primary-button">立即爬取</button><button id="crawl-cancel" class="secondary-button">停止同步</button></div></div>
+        <p id="crawl-progress" class="import-progress crawler-progress" role="status" aria-live="polite" hidden></p>
+        <div id="crawl-source-summary" class="stat-grid"></div>
+        <div class="filter-panel compact-filter"><label>来源<select id="crawl-record-source"><option value="all">全部来源</option></select></label><label>处理结果<select id="crawl-record-status"><option value="all">全部结果</option><option value="queued">待处理</option><option value="imported">已导入</option><option value="duplicate">已存在</option><option value="ignored">已忽略</option><option value="failed">失败</option></select></label><button id="crawl-record-search" class="primary-button">查询</button></div>
+        <div class="content-panel"><div class="panel-heading"><div><span class="panel-kicker">CRAWL RECORDS</span><strong>词条爬取记录</strong></div><span id="crawl-record-count">正在加载数据…</span></div><div id="crawl-records-table" class="table-host"></div><div id="crawl-record-pagination" class="pagination"></div></div>
       </section>
 
       <section id="candidates" class="page">
@@ -200,7 +210,13 @@
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-dialog="review-action-dialog">取消</button><button type="button" id="confirm-review-action" class="primary-button">确认</button></div>
     </dialog>
 
+    <dialog id="crawl-error-dialog" class="app-dialog crawl-error-dialog">
+      <div class="dialog-heading"><div><span class="panel-kicker">SYNC ERROR</span><h2>同步错误详情</h2></div><button type="button" class="dialog-close" data-close-dialog="crawl-error-dialog" aria-label="关闭">×</button></div>
+      <div class="dialog-body"><p>可以选择下面的完整错误文本，或直接复制到剪贴板。</p><pre id="crawl-error-content" tabindex="0"></pre></div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-dialog="crawl-error-dialog">关闭</button><button type="button" id="copy-crawl-error" class="primary-button">复制错误</button></div>
+    </dialog>
+
     <div id="toast" role="status"></div>
-    <script type="module" src="/assets/js/app.js?v=20260723-provenance-labels"></script>
+    <script type="module" src="/assets/js/app.js?v=20260730-overview-tabs"></script>
   </body>
 </html>

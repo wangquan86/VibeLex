@@ -2,6 +2,7 @@ package com.vibelex.sourceingestion.application;
 
 import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
+import com.vibelex.crawling.CrawlConnector;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import com.vibelex.sourceingestion.api.ImportController.ImportRequest;
 import java.io.IOException;
@@ -35,6 +36,7 @@ public class SourceImportService {
   private final Path dataDirectory;
   private final long maxFileBytes;
   private final Map<String, CandidateImporter> importers;
+  private final List<String> crawlerSourceNames;
 
   public SourceImportService(
       MyBatisDatabase database,
@@ -42,6 +44,7 @@ public class SourceImportService {
       TermNormalizer normalizer,
       CurrentActorProvider actorProvider,
       List<CandidateImporter> importers,
+      List<CrawlConnector> crawlConnectors,
       @Value("${vibelex.data-directory}") String dataDirectory,
       @Value("${vibelex.import.max-file-bytes}") long maxFileBytes) {
     this.database = database;
@@ -53,6 +56,8 @@ public class SourceImportService {
     Map<String, CandidateImporter> registry = new HashMap<>();
     for (CandidateImporter importer : importers) registry.put(importer.sourceCode(), importer);
     this.importers = Map.copyOf(registry);
+    this.crawlerSourceNames =
+        crawlConnectors.stream().map(CrawlConnector::sourceName).sorted().toList();
   }
 
   public List<Map<String, String>> sources() {
@@ -69,7 +74,9 @@ public class SourceImportService {
 
   /** Shared source dictionary for candidate, review, and published-entry filtering. */
   public List<String> sourceDictionary() {
-    return List.of("Buzzword", "CHIME", "人工录入");
+    return Stream.concat(Stream.of("Buzzword", "CHIME", "人工录入"), crawlerSourceNames.stream())
+        .distinct()
+        .toList();
   }
 
   public List<String> availableFiles(String sourceCode) {
@@ -99,6 +106,17 @@ public class SourceImportService {
                 ORDER BY id DESC
                 LIMIT 100
                 """);
+  }
+
+  public Map<String, Object> summary() {
+    return database.one(
+        """
+        SELECT COUNT(*) AS run_count,
+               COALESCE(SUM(candidate_count), 0) AS candidate_count,
+               COALESCE(SUM(rejected_count), 0) AS failed_count,
+               MAX(COALESCE(finished_at, started_at)) AS last_import_at
+        FROM source_import_runs
+        """);
   }
 
   public Map<String, Object> importFile(String sourceCode, ImportRequest request) {

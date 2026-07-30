@@ -2,8 +2,9 @@
 
 **项目名称：** VibeLex  
 **数据库名称：** `vibelex_db`  
-**产品版本：** V1.0  
-**文档修订：** 1.3  
+**产品版本：** V3.0
+
+**文档修订：** 3.0
 **数据库：** MySQL 8.0+  
 **存储引擎：** InnoDB  
 **字符集：** utf8mb4  
@@ -141,6 +142,8 @@ USE vibelex_db;
 | 10 | `source_import_runs` | 导入运行表 | 保存 CHIME 文件、许可证核验、运行状态与统计 |
 | 11 | `candidate_entries` | 候选词条表 | 保存人工或数据文件导入候选、编辑内容、审核状态和正式词条关联 |
 | 12 | `index_sync_tasks` | ES 索引同步任务表 | 保存 V2 正式词条索引增量同步、重试和错误状态 |
+| 13 | `crawl_checkpoints` | 网站爬取检查点表 | 保存 V3 各来源的检查点、当前任务状态和本次处理统计 |
+| 14 | `crawl_records` | 网站词条爬取记录表 | 保存 V3 来源记录队列、处理终态、重试错误及候选关联 |
 
 ---
 
@@ -174,6 +177,10 @@ source_import_runs
     └── candidate_entries（导入候选；人工候选不关联 source_import_runs）
             └── meme_entries（审核批准后通过 published_meme_id 关联）
 
+crawl_checkpoints
+    └── crawl_records（网站来源记录、处理队列和永久结果）
+            └── candidate_entries（成功进入候选时通过 candidate_id 关联）
+
 entry_change_sets（保留的通用正式词条变更能力）
 ```
 
@@ -193,6 +200,8 @@ entry_change_sets（保留的通用正式词条变更能力）
 | `meme_senses` | `meme_match_rules` | 1 对多（可选） | 删除义项时级联删除义项专属规则 |
 | `meme_senses` | `meme_evidence` | 1 对多（可选） | 删除义项时级联删除义项专属证据 |
 | `source_import_runs` | `candidate_entries` | 1 对多 | 已产生候选的运行不可物理删除 |
+| `crawl_checkpoints` | `crawl_records` | 1 对多 | 来源存在爬取记录时不可物理删除检查点 |
+| `candidate_entries` | `crawl_records` | 1 对多（可选） | 候选删除时爬取记录的候选关联置空，处理终态保留 |
 | `entry_change_sets` | `candidate_entries` | 1 对多（历史兼容，可选） | V1 候选直接审核不建立该关联；旧 change set 删除时候选关联置空 |
 | `meme_entries` | `entry_change_sets` | 1 对多（可选） | 正式词条存在 change set 时不可物理删除 |
 
@@ -888,7 +897,7 @@ source_version、file_hash、license_checked_by、license_checked_at 均已填�
 
 ### 用途
 
-保存人工录入或数据文件导入后的候选记录。候选是唯一可编辑的工作对象，不创建候选草稿；提交后锁定，审核批准后直接生成或更新正式词条。
+保存人工录入、数据文件导入或网站爬取产生的候选记录。候选是唯一可编辑的工作对象，不创建候选草稿；提交后锁定，审核批准后直接生成或更新正式词条。
 
 ```sql
 CREATE TABLE candidate_entries (
@@ -926,10 +935,10 @@ CREATE TABLE candidate_entries (
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_0900_ai_ci
-  COMMENT='人工或 CHIME 候选：可编辑、提交审核、退回修改或审核发布';
+  COMMENT='人工、文件导入或网站爬取候选：可编辑、提交审核、退回修改或审核发布';
 ```
 
-V2 在此基础上增加 `source_type`、`created_by`、`submitted_by`、`submitted_at`、`review_base_version`、`reviewed_by`、`reviewed_at`、`review_comment` 和 `published_meme_id`。`import_run_id` 与 `import_fingerprint` 允许为空，以支持人工录入。V4 将 `processing_note` 扩展为 `MEDIUMTEXT`，用于保存候选编辑内容，例如起源说明、例句、变体及 AI变体参考来源。详见相应 Flyway 迁移。
+V2 在此基础上增加 `source_type`、`created_by`、`submitted_by`、`submitted_at`、`review_base_version`、`reviewed_by`、`reviewed_at`、`review_comment` 和 `published_meme_id`。`import_run_id` 与 `import_fingerprint` 允许为空，以支持人工录入和网站爬取。V4 将 `processing_note` 扩展为 `MEDIUMTEXT`，用于保存候选编辑内容，例如起源说明、例句、变体及 AI变体参考来源。V3 的爬取候选使用 `source_type=crawler`，并在 `processing_note` 中保存用户可读来源名称、原始来源记录键、来源分类和标签；`candidate_entries.source_record_key` 使用来源代码与原始记录键计算的 SHA-256 派生键。详见相应 Flyway 迁移。
 
 ## 6.12 ES 索引同步任务表：`index_sync_tasks`
 
@@ -955,6 +964,75 @@ CREATE TABLE index_sync_tasks (
 ```
 
 同一 `meme_id` 同时只保留一个任务槽位；新变更通过 upsert 刷新操作和调度时间。任务最多自动尝试 5 次，`processing` 超过 10 分钟会恢复为 `pending`，最终失败后可从管理页面重新入队。该表不对 `meme_entries` 建外键，以便词条删除/异常恢复场景仍能保留 DELETE 同步任务。
+
+## 6.13 网站爬取检查点表：`crawl_checkpoints`
+
+每个 V3 网站来源保存一条检查点记录。`checkpoint` 是最近成功提交的来源游标，`pending_checkpoint` 是当前任务枚举得到的目标游标；只有本次记录全部处理完成且没有失败记录时才推进检查点。
+
+```sql
+CREATE TABLE crawl_checkpoints (
+    source_code VARCHAR(64) NOT NULL,
+    checkpoint JSON NULL,
+    pending_checkpoint JSON NULL,
+    current_status VARCHAR(32) NOT NULL DEFAULT 'idle',
+    discovered_count INT UNSIGNED NOT NULL DEFAULT 0,
+    imported_count INT UNSIGNED NOT NULL DEFAULT 0,
+    duplicate_count INT UNSIGNED NOT NULL DEFAULT 0,
+    ignored_count INT UNSIGNED NOT NULL DEFAULT 0,
+    failed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    lease_owner VARCHAR(128) NULL,
+    lease_until DATETIME(3) NULL,
+    error_summary VARCHAR(2000) NULL,
+    started_at DATETIME(3) NULL,
+    finished_at DATETIME(3) NULL,
+    last_successful_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (source_code),
+    KEY idx_crawl_checkpoint_status(current_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+`current_status` 使用 `idle`、`planning`、`running`、`partial` 和 `failed`。V6 初次建表时曾包含 `full_completed` 和 `current_mode`，V7 已删除这两个字段，统一使用“无检查点即完整枚举、有检查点即增量枚举”的同步语义。
+
+## 6.14 网站词条爬取记录表：`crawl_records`
+
+每个来源记录键只保存一条记录，同时承担待处理队列、失败重试和永久处理结果。`imported`、`duplicate`、`ignored` 为终态；`failed` 可在下次同步启动时重新入队。
+
+```sql
+CREATE TABLE crawl_records (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    source_code VARCHAR(64) NOT NULL,
+    source_record_key VARCHAR(512) NOT NULL,
+    source_url VARCHAR(2048) NOT NULL,
+    source_modified_at DATETIME(3) NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    normalized_term VARCHAR(255) NULL,
+    candidate_id BIGINT UNSIGNED NULL,
+    duplicate_target_type VARCHAR(32) NULL,
+    duplicate_target_id BIGINT UNSIGNED NULL,
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(3) NULL,
+    lease_owner VARCHAR(128) NULL,
+    lease_until DATETIME(3) NULL,
+    error_type VARCHAR(64) NULL,
+    error_message VARCHAR(2000) NULL,
+    processed_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    CONSTRAINT fk_crawl_record_checkpoint FOREIGN KEY (source_code)
+        REFERENCES crawl_checkpoints(source_code) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT fk_crawl_record_candidate FOREIGN KEY (candidate_id)
+        REFERENCES candidate_entries(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    UNIQUE KEY uk_crawl_source_record(source_code, source_record_key),
+    KEY idx_crawl_record_claim(source_code, status, next_attempt_at, lease_until),
+    KEY idx_crawl_record_candidate(candidate_id),
+    KEY idx_crawl_record_processed(processed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
 
 ---
 
@@ -1461,3 +1539,4 @@ V2 已使用 Elasticsearch 保存义项检索投影和向量；MySQL 仍为权�
 | V1.2 | 2026-07-16 | 候选表支持人工录入、直接编辑、提交锁定、审核退回和直接发布；候选审核不再使用 change set 草稿 |
 | V1.3 | 2026-07-16 | 趋势与生命周期枚举拆分；趋势默认改为 untracked，active/archived/obsolete 不再作为趋势状态 |
 | V2.0 | 2026-07-28 | 增加 `index_sync_tasks`，支持 Elasticsearch 增量同步、自动重试、失败记录和人工重新入队 |
+| V3.0 | 2026-07-30 | 增加 `crawl_checkpoints` 与 `crawl_records`，支持多来源网站词条爬取、检查点、失败重试和候选关联 |

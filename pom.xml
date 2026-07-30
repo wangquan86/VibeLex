@@ -10,7 +10,7 @@
   </parent>
   <groupId>com.vibelex</groupId>
   <artifactId>vibelex</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>3.0.0</version>
   <name>VibeLex</name>
   <properties>
     <java.version>17</java.version>

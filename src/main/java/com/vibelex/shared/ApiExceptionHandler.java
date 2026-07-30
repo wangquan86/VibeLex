@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class ApiExceptionHandler {
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
   @ExceptionHandler(RecognitionV2Service.TextTooLongException.class)
   ProblemDetail textTooLong(RecognitionV2Service.TextTooLongException ex) {
     return problem(HttpStatus.PAYLOAD_TOO_LARGE, "文本超过 V2 识别长度上限");

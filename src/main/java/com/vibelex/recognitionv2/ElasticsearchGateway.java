@@ -75,7 +75,9 @@ public class ElasticsearchGateway {
     try {
       for (String query : queries) {
         if (query == null || query.isBlank()) continue;
-        ndjson.append(mapper.writeValueAsString(Map.of("index", properties.getElasticsearch().getIndexAlias())));
+        ndjson.append(
+            mapper.writeValueAsString(
+                Map.of("index", properties.getElasticsearch().getIndexAlias())));
         ndjson.append('\n');
         ndjson.append(mapper.writeValueAsString(lexicalPayload(query)));
         ndjson.append('\n');
@@ -89,7 +91,8 @@ public class ElasticsearchGateway {
       List<Hit> result = new ArrayList<>();
       for (JsonNode item : mapper.readTree(response.body()).path("responses")) {
         if (item.has("error"))
-          throw new IllegalStateException("ES lexical multi-search item failed: " + item.path("error"));
+          throw new IllegalStateException(
+              "ES lexical multi-search item failed: " + item.path("error"));
         result.addAll(hits(item));
       }
       return result;

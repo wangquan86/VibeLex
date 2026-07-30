@@ -36,6 +36,11 @@ public class ImportController {
     return service.runs();
   }
 
+  @GetMapping("/summary")
+  public Map<String, Object> summary() {
+    return service.summary();
+  }
+
   @PostMapping("/{source}")
   public Map<String, Object> importSource(
       @PathVariable String source, @Valid @RequestBody ImportRequest request) {

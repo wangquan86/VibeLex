@@ -27,12 +27,7 @@ class NormalizedViewTest {
 
     List<RecognitionService.Candidate> candidates =
         service.anchorCandidates(
-            "这薯片吃起来特别 treetree 的，真的破防了。",
-            "zh-CN",
-            1817,
-            1859L,
-            List.of("treetree的"),
-            "lexical");
+            "这薯片吃起来特别 treetree 的，真的破防了。", "zh-CN", 1817, 1859L, List.of("treetree的"), "lexical");
 
     assertThat(candidates)
         .containsExactly(new RecognitionService.Candidate(1817, 1859L, 9, 19, "lexical"));

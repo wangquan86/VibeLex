@@ -5,11 +5,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
+import com.vibelex.crawling.CrawlConnector.CrawledEntry;
 import com.vibelex.llm.AiVariantGenerator;
 import com.vibelex.reviewworkflow.application.ChangeSetService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
@@ -17,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 class CandidateServiceTest {
@@ -119,6 +124,159 @@ class CandidateServiceTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("审核意见");
     verifyNoInteractions(database);
+  }
+
+  @Test
+  void createsEditingCandidateWithMappedSourceMetadata() throws Exception {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("新词", "zh-CN")).thenReturn("新词");
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null);
+    when(database.insert(anyString(), any(Object[].class))).thenReturn(42L);
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    var result =
+        service.createFromCrawler(
+            "popcidian",
+            "波普词典",
+            new CrawledEntry(
+                "新词",
+                "新的释义",
+                List.of("新词的使用例句"),
+                "slang",
+                "互联网黑话",
+                List.of("互联网", "职场"),
+                "https://example.test/new",
+                "新词",
+                "v1"),
+            "system");
+
+    assertThat(result.status()).isEqualTo("imported");
+    assertThat(result.candidateId()).isEqualTo(42L);
+    ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
+    verify(database).insert(anyString(), arguments.capture());
+    assertThat(arguments.getValue()[6]).isEqualTo("system");
+    verifyNoInteractions(actor);
+    JsonNode note = new ObjectMapper().readTree(String.valueOf(arguments.getValue()[7]));
+    assertThat(note.path("category").asText()).isEqualTo("slang");
+    assertThat(note.path("source_category").asText()).isEqualTo("互联网黑话");
+    assertThat(note.path("source_name").asText()).isEqualTo("波普词典");
+    assertThat(note.path("source_tags")).extracting(JsonNode::asText).containsExactly("互联网", "职场");
+    assertThat(note.path("examples")).extracting(JsonNode::asText).containsExactly("新词的使用例句");
+  }
+
+  @Test
+  void crawlerTermMatchingPublishedEntryIsDuplicate() {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("旧词", "zh-CN")).thenReturn("旧词");
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(7L);
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    var result =
+        service.createFromCrawler(
+            "popcidian",
+            "波普词典",
+            new CrawledEntry(
+                "旧词",
+                "已有释义",
+                List.of(),
+                "other",
+                null,
+                List.of(),
+                "https://example.test/old",
+                "旧词",
+                "v1"),
+            "system");
+
+    assertThat(result.status()).isEqualTo("duplicate");
+    assertThat(result.duplicateTargetType()).isEqualTo("meme");
+    assertThat(result.duplicateTargetId()).isEqualTo(7L);
+    verify(database, never()).insert(anyString(), any(Object[].class));
+  }
+
+  @Test
+  void crawlerTermMatchingActiveVariantIsDuplicate() {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("别名", "zh-CN")).thenReturn("别名");
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null, 9L);
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    var result =
+        service.createFromCrawler(
+            "popcidian",
+            "波普词典",
+            new CrawledEntry(
+                "别名",
+                "释义",
+                List.of(),
+                "other",
+                null,
+                List.of(),
+                "https://example.test/alias",
+                "别名",
+                "v1"),
+            "system");
+
+    assertThat(result.status()).isEqualTo("duplicate");
+    assertThat(result.duplicateTargetType()).isEqualTo("variant");
+    assertThat(result.duplicateTargetId()).isEqualTo(9L);
+    verify(database, never()).insert(anyString(), any(Object[].class));
+  }
+
+  @Test
+  void crawlerTermMatchingCandidateIsDuplicateRegardlessOfCandidateStatus() {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("候选词", "zh-CN")).thenReturn("候选词");
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null, null, 11L);
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    var result =
+        service.createFromCrawler(
+            "popcidian",
+            "波普词典",
+            new CrawledEntry(
+                "候选词",
+                "释义",
+                List.of(),
+                "other",
+                null,
+                List.of(),
+                "https://example.test/candidate",
+                "候选词",
+                "v1"),
+            "system");
+
+    assertThat(result.status()).isEqualTo("duplicate");
+    assertThat(result.duplicateTargetType()).isEqualTo("candidate");
+    assertThat(result.duplicateTargetId()).isEqualTo(11L);
+    verify(database, never()).insert(anyString(), any(Object[].class));
   }
 
   @Test

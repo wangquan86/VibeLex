@@ -2,10 +2,14 @@ package com.vibelex.candidatediscovery.application;
 
 import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
+import com.vibelex.crawling.CrawlConnector.CrawledEntry;
 import com.vibelex.llm.AiVariantGenerator;
 import com.vibelex.reviewworkflow.application.ChangeSetService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +38,8 @@ public class CandidateService {
 
   private static final Set<String> SUPPORTED_STATUSES =
       Set.of("editing", "pending_review", "returned", "published", "all");
+  private static final Set<String> FIXED_CATEGORIES =
+      Set.of("other", "slang", "homophone", "abbreviation", "template_phrase");
 
   private final MyBatisDatabase database;
   private final ObjectMapper mapper;
@@ -86,7 +92,8 @@ public class CandidateService {
       filterArgs.add(pattern);
     }
     if (!sourceKeyword.isBlank()) {
-      where.append(" AND COALESCE(r.source_name, '人工录入') = ?");
+      where.append(
+          " AND CASE WHEN c.source_type = 'crawler' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_name')), JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_code')), '未知来源') ELSE COALESCE(r.source_name, '人工录入') END = ?");
       filterArgs.add(sourceKeyword);
     }
 
@@ -103,8 +110,10 @@ public class CandidateService {
     List<Map<String, Object>> items =
         database.list(
             """
-                SELECT c.*, COALESCE(r.source_name, '人工录入') AS source_name,
-                       COALESCE(r.source_version, 'manual') AS source_version,
+                SELECT c.*, CASE WHEN c.source_type = 'crawler' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_name')), JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_code')), '未知来源')
+                                  ELSE COALESCE(r.source_name, '人工录入') END AS source_name,
+                       CASE WHEN c.source_type = 'crawler' THEN c.parser_version
+                            ELSE COALESCE(r.source_version, 'manual') END AS source_version,
                        r.file_name, r.source_url AS import_source_url
                 FROM candidate_entries c
                 LEFT JOIN source_import_runs r ON r.id = c.import_run_id
@@ -125,8 +134,10 @@ public class CandidateService {
   public Map<String, Object> detail(long candidateId) {
     return database.one(
         """
-            SELECT c.*, COALESCE(r.source_name, '人工录入') AS source_name,
-                   COALESCE(r.source_version, 'manual') AS source_version,
+            SELECT c.*, CASE WHEN c.source_type = 'crawler' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_name')), JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_code')), '未知来源')
+                              ELSE COALESCE(r.source_name, '人工录入') END AS source_name,
+                   CASE WHEN c.source_type = 'crawler' THEN c.parser_version
+                        ELSE COALESCE(r.source_version, 'manual') END AS source_version,
                    r.file_name, r.source_url AS import_source_url
             FROM candidate_entries c
             LEFT JOIN source_import_runs r ON r.id = c.import_run_id
@@ -134,6 +145,84 @@ public class CandidateService {
             """,
         candidateId);
   }
+
+  @Transactional
+  public CrawlerImportResult createFromCrawler(
+      String sourceCode, String sourceName, CrawledEntry entry, String createdBy) {
+    if (sourceName == null || sourceName.isBlank()) {
+      throw new IllegalArgumentException("爬虫来源名称不能为空");
+    }
+    if (createdBy == null || createdBy.isBlank()) {
+      throw new IllegalArgumentException("爬虫操作者不能为空");
+    }
+    validateCandidate(entry.term(), entry.definition());
+    String normalized = normalizer.normalize(entry.term(), "zh-CN");
+
+    Long memeId =
+        numberAsLong(
+            database.scalar(
+                "SELECT id FROM meme_entries WHERE normalized_term = ? LIMIT 1", normalized));
+    if (memeId != null) {
+      return new CrawlerImportResult("duplicate", null, "meme", memeId, normalized);
+    }
+
+    Long variantMemeId =
+        numberAsLong(
+            database.scalar(
+                "SELECT meme_id FROM meme_variants WHERE normalized_variant = ? AND status = 'active' LIMIT 1",
+                normalized));
+    if (variantMemeId != null) {
+      return new CrawlerImportResult("duplicate", null, "variant", variantMemeId, normalized);
+    }
+
+    Long candidateId =
+        numberAsLong(
+            database.scalar(
+                "SELECT id FROM candidate_entries WHERE normalized_term = ? LIMIT 1", normalized));
+    if (candidateId != null) {
+      return new CrawlerImportResult("duplicate", null, "candidate", candidateId, normalized);
+    }
+
+    ObjectNode note = mapper.createObjectNode();
+    note.put("source_code", sourceCode);
+    note.put("source_name", sourceName.trim());
+    note.put("source_record_key", entry.sourceRecordKey());
+    note.put("category", FIXED_CATEGORIES.contains(entry.category()) ? entry.category() : "other");
+    if (entry.sourceCategory() != null && !entry.sourceCategory().isBlank()) {
+      note.put("source_category", entry.sourceCategory().trim());
+    }
+    appendCrawlerStrings(note.putArray("source_tags"), entry.sourceTags(), 20, 64);
+    appendCrawlerStrings(note.putArray("examples"), entry.examples(), 20, 2000);
+    note.put("profanity", false);
+    note.put("offense", false);
+    note.putArray("variants");
+    long createdId =
+        database.insert(
+            """
+            INSERT INTO candidate_entries(
+                import_run_id, import_fingerprint, source_record_key,
+                term_raw, normalized_term, definition_raw, source_url,
+                parser_version, source_type, created_by, status,
+                duplicate_meme_id, processing_note
+            ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, 'crawler', ?, 'editing', NULL, ?)
+            """,
+            crawlerRecordKey(sourceCode, entry.sourceRecordKey()),
+            entry.term().trim(),
+            normalized,
+            entry.definition().trim(),
+            blankToNull(entry.sourceUrl()),
+            entry.parserVersion(),
+            createdBy.trim(),
+            toJson(note));
+    return new CrawlerImportResult("imported", createdId, null, null, normalized);
+  }
+
+  public record CrawlerImportResult(
+      String status,
+      Long candidateId,
+      String duplicateTargetType,
+      Long duplicateTargetId,
+      String normalizedTerm) {}
 
   @Transactional
   @SuppressWarnings("DuplicatedCode") // Public command signature intentionally mirrors update.
@@ -465,7 +554,8 @@ public class CandidateService {
     Map<String, Object> candidate =
         database.optionalOne(
             """
-                SELECT c.*, COALESCE(r.source_name, '人工录入') AS source_name,
+                SELECT c.*, CASE WHEN c.source_type = 'crawler' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_name')), JSON_UNQUOTE(JSON_EXTRACT(c.processing_note, '$.source_code')), '未知来源')
+                                  ELSE COALESCE(r.source_name, '人工录入') END AS source_name,
                        r.source_url AS import_source_url
                 FROM candidate_entries c
                 LEFT JOIN source_import_runs r ON r.id = c.import_run_id
@@ -534,6 +624,10 @@ public class CandidateService {
     entry.put("normalized_term", normalizedTerm);
     entry.put("category", candidateCategory(note));
     entry.put("status", "published");
+
+    if (note.path("source_tags").isArray()) {
+      entry.set("domain_tags", note.path("source_tags").deepCopy());
+    }
 
     if (note.hasNonNull("origin")) {
       entry.put("origin_summary", note.path("origin").asString());
@@ -607,10 +701,7 @@ public class CandidateService {
       String url = item.path("url").asString().trim();
       if (url.isBlank() || url.length() > 2048 || !existingUrls.add(url)) continue;
       appendVariantEvidenceItem(
-              evidence,
-              item.path("title").asString("联网搜索"),
-              url,
-              item.path("snippet").asString())
+              evidence, item.path("title").asString("联网搜索"), url, item.path("snippet").asString())
           .put("confidence", variant.path("confidence").asDouble(1))
           .put("status", "active");
     }
@@ -854,6 +945,33 @@ public class CandidateService {
     if (term.trim().length() > 255) {
       throw new IllegalArgumentException("候选词形不能超过 255 个字符");
     }
+  }
+
+  private String crawlerRecordKey(String sourceCode, String sourceRecordKey) {
+    try {
+      String digest =
+          HexFormat.of()
+              .formatHex(
+                  MessageDigest.getInstance("SHA-256")
+                      .digest(
+                          (sourceCode + "\n" + sourceRecordKey).getBytes(StandardCharsets.UTF_8)));
+      return "crawler:" + sourceCode + ":" + digest;
+    } catch (Exception e) {
+      throw new IllegalStateException("无法生成爬虫来源键", e);
+    }
+  }
+
+  private void appendCrawlerStrings(
+      ArrayNode target, List<String> values, int maximumItems, int maximumLength) {
+    if (values == null) return;
+    values.stream()
+        .filter(Objects::nonNull)
+        .map(String::trim)
+        .filter(value -> !value.isBlank())
+        .map(value -> value.substring(0, Math.min(maximumLength, value.length())))
+        .distinct()
+        .limit(maximumItems)
+        .forEach(target::add);
   }
 
   private String blankToNull(String value) {

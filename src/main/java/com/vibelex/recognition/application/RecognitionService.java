@@ -45,15 +45,21 @@ public class RecognitionService {
    * convention as the public recognition API. Candidates still go through the V1 scoring,
    * disambiguation, overlap and policy pipeline.
    */
-  public record Candidate(long memeId, Long senseId, int startOffset, int endOffset, String source) {}
+  public record Candidate(
+      long memeId, Long senseId, int startOffset, int endOffset, String source) {}
 
   /**
-   * Locates ES-nominated terms in original text with the same normalization views used by V1.
-   * This keeps V2 offsets lossless when the index term and input differ only in spacing, case,
+   * Locates ES-nominated terms in original text with the same normalization views used by V1. This
+   * keeps V2 offsets lossless when the index term and input differ only in spacing, case,
    * full-width characters or pinyin formatting.
    */
   public List<Candidate> anchorCandidates(
-      String text, String languageCode, long memeId, Long senseId, List<String> terms, String source) {
+      String text,
+      String languageCode,
+      long memeId,
+      Long senseId,
+      List<String> terms,
+      String source) {
     String language = languageCode == null ? "zh-CN" : languageCode;
     Map<NormalizationProfile, NormalizedView> views = new EnumMap<>(NormalizationProfile.class);
     for (NormalizationProfile profile : NormalizationProfile.values())
@@ -69,7 +75,9 @@ public class RecognitionService {
           continue;
         }
         NormalizedView view = views.get(profile);
-        for (int from = 0; (from = view.text.indexOf(needle, from)) >= 0; from += Math.max(1, needle.length())) {
+        for (int from = 0;
+            (from = view.text.indexOf(needle, from)) >= 0;
+            from += Math.max(1, needle.length())) {
           NormalizedView.Span span = view.span(from, from + needle.length());
           Candidate candidate = new Candidate(memeId, senseId, span.start(), span.end(), source);
           result.putIfAbsent(span.start() + ":" + span.end(), candidate);
@@ -143,7 +151,8 @@ public class RecognitionService {
     for (Candidate candidate : candidates) {
       if (candidate.startOffset() < 0
           || candidate.endOffset() <= candidate.startOffset()
-          || candidate.endOffset() > request.text().codePointCount(0, request.text().length())) continue;
+          || candidate.endOffset() > request.text().codePointCount(0, request.text().length()))
+        continue;
       raw.add(
           new Raw(
               candidate.memeId(),
@@ -262,8 +271,7 @@ public class RecognitionService {
       Scored best = g.get(0);
       if (g.size() > 1
           && best.confidence == g.get(1).confidence
-          && best.senseHits == g.get(1).senseHits)
-        best = ambiguous(best, g);
+          && best.senseHits == g.get(1).senseHits) best = ambiguous(best, g);
       out.add(best);
     }
     return out;
@@ -278,13 +286,7 @@ public class RecognitionService {
     Map<String, Scored> merged = new LinkedHashMap<>();
     for (Scored candidate : input) {
       String key =
-          candidate.memeId
-              + ":"
-              + candidate.senseId
-              + ":"
-              + candidate.start
-              + ":"
-              + candidate.end;
+          candidate.memeId + ":" + candidate.senseId + ":" + candidate.start + ":" + candidate.end;
       merged.merge(key, candidate, this::mergeEvidence);
     }
     return new ArrayList<>(merged.values());
@@ -351,7 +353,8 @@ public class RecognitionService {
     return out;
   }
 
-  private Map<String, Object> output(Scored x, String text, Data data, boolean includeRecallSources) {
+  private Map<String, Object> output(
+      Scored x, String text, Data data, boolean includeRecallSources) {
     Entry e = data.entries().get(x.memeId);
     Map<String, Object> p = new LinkedHashMap<>();
     p.put("detect_enabled", e.detect());
@@ -381,9 +384,8 @@ public class RecognitionService {
   private List<int[]> findRaw(String text, String pattern) {
     List<int[]> r = new ArrayList<>();
     if (pattern == null || pattern.isEmpty()) return r;
-    for (int from = 0;
-        (from = text.indexOf(pattern, from)) >= 0;
-        from += pattern.length()) r.add(new int[] {from, from + pattern.length()});
+    for (int from = 0; (from = text.indexOf(pattern, from)) >= 0; from += pattern.length())
+      r.add(new int[] {from, from + pattern.length()});
     return r;
   }
 

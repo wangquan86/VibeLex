@@ -17,6 +17,21 @@ vibelex:
   actors: editor01,reviewer01,admin01,system
   default-actor: system
   data-directory: data
+  crawling:
+    enabled: true
+    worker:
+      fixed-delay-millis: 3000
+      lease-seconds: 120
+      actor-id: system
+    popcidian:
+      enabled: true
+      base-url: https://www.popcidian.com
+      sitemap-url: https://www.popcidian.com/sitemap.xml
+      sync-cron: "0 30 3 * * *"
+      request-timeout-seconds: 30
+      maximum-attempts: 3
+      maximum-discovered-items: 5000
+      user-agent: VibeLexCrawler/3.0
   import:
     max-file-bytes: 52428800
   llm:

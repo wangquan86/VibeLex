@@ -1,7 +1,6 @@
 package com.vibelex.recognitionv2;
 
 import com.vibelex.shared.persistence.MyBatisDatabase;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -65,14 +64,35 @@ public class IndexSyncTaskService {
     Object total = database.scalar("SELECT COUNT(*) FROM index_sync_tasks" + where, args);
     List<Map<String, Object>> items =
         "all".equals(selected)
-            ? database.list("SELECT * FROM index_sync_tasks ORDER BY id DESC LIMIT ? OFFSET ?", safeSize, (safePage - 1) * safeSize)
-            : database.list("SELECT * FROM index_sync_tasks" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", selected, safeSize, (safePage - 1) * safeSize);
-    List<Map<String, Object>> counts = database.list("SELECT status, COUNT(*) AS count FROM index_sync_tasks GROUP BY status");
-    return Map.of("items", items, "page", safePage, "size", safeSize, "totalElements", ((Number) total).longValue(), "summary", counts);
+            ? database.list(
+                "SELECT * FROM index_sync_tasks ORDER BY id DESC LIMIT ? OFFSET ?",
+                safeSize,
+                (safePage - 1) * safeSize)
+            : database.list(
+                "SELECT * FROM index_sync_tasks" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                selected,
+                safeSize,
+                (safePage - 1) * safeSize);
+    List<Map<String, Object>> counts =
+        database.list("SELECT status, COUNT(*) AS count FROM index_sync_tasks GROUP BY status");
+    return Map.of(
+        "items",
+        items,
+        "page",
+        safePage,
+        "size",
+        safeSize,
+        "totalElements",
+        ((Number) total).longValue(),
+        "summary",
+        counts);
   }
 
   public void retry(long id) {
-    int changed = database.update("UPDATE index_sync_tasks SET status='pending', retry_count=0, next_retry_at=NOW(3), last_error=NULL, finished_at=NULL WHERE id=? AND status='failed'", id);
+    int changed =
+        database.update(
+            "UPDATE index_sync_tasks SET status='pending', retry_count=0, next_retry_at=NOW(3), last_error=NULL, finished_at=NULL WHERE id=? AND status='failed'",
+            id);
     if (changed == 0) throw new IllegalStateException("仅失败任务可以重新入队");
   }
 
@@ -114,18 +134,24 @@ public class IndexSyncTaskService {
       if ("DELETE".equals(task.get("operation"))) index.deleteMeme(memeId);
       else index.syncMeme(memeId);
       database.update(
-          "UPDATE index_sync_tasks SET status='succeeded', finished_at=NOW(3), last_error=NULL WHERE id=?", id);
+          "UPDATE index_sync_tasks SET status='succeeded', finished_at=NOW(3), last_error=NULL WHERE id=?",
+          id);
     } catch (RuntimeException ex) {
       int nextRetry = retry + 1;
       if (nextRetry >= MAX_RETRIES) {
         database.update(
             "UPDATE index_sync_tasks SET status='failed', retry_count=?, last_error=? WHERE id=?",
-            nextRetry, safeError(ex), id);
+            nextRetry,
+            safeError(ex),
+            id);
       } else {
         int delay = Math.min(1800, 60 * (1 << Math.min(nextRetry - 1, 5)));
         database.update(
             "UPDATE index_sync_tasks SET status='pending', retry_count=?, next_retry_at=DATE_ADD(NOW(3), INTERVAL ? SECOND), last_error=? WHERE id=?",
-            nextRetry, delay, safeError(ex), id);
+            nextRetry,
+            delay,
+            safeError(ex),
+            id);
       }
       log.warn("V2 索引任务失败 id={} memeId={} retry={}", id, memeId, nextRetry, ex);
     }

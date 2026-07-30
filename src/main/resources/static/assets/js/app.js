@@ -25,6 +25,14 @@ const ENUM_LABELS = {
   partial_success: "部分成功",
   failed: "失败",
   running: "运行中",
+  idle: "空闲",
+  planning: "规划中",
+  partial: "部分失败",
+  retry_wait: "等待重试",
+  duplicate: "重复跳过",
+  ignored: "已忽略",
+  full: "全量",
+  incremental: "增量",
   editing: "编辑中",
   pending: "待处理",
   processing: "处理中",
@@ -177,6 +185,10 @@ function statusBadge(status) {
   const warning = ["returned", "rejected"].includes(status);
   const tone = success ? "success" : info ? "info" : warning ? "warning" : "";
   return `<span class="badge ${tone}">${escapeHtml(enumLabel(status))}</span>`;
+}
+
+function candidateSourceLabel(row) {
+  return row.source_type === "manual" ? "人工录入" : escapeHtml(row.source_name || "未知来源");
 }
 
 function renderTable(rows, columns, actions) {
@@ -381,7 +393,7 @@ async function loadCandidates(page = candidateState.page) {
       ["候选词形", (row) => `<strong>${escapeHtml(row.term_raw)}</strong>`],
       ["释义草稿", (row) => escapeHtml(row.definition_raw?.slice(0, 120)), "long-text"],
       ["重复词条", (row) => row.duplicate_meme_id || "—"],
-      ["来源", (row) => row.source_type === "manual" ? "人工录入" : `${escapeHtml(row.source_name)} / ${escapeHtml(row.source_version)}`],
+      ["来源", candidateSourceLabel],
       ["状态", (row) => statusBadge(row.status)],
     ],
     candidateActions,
@@ -584,8 +596,12 @@ async function openCandidateEditor(candidateId = null) {
       find("#candidate-editor-import-provenance").hidden = false;
       find("#candidate-editor-import-source").textContent = row.source_type === "manual"
         ? "人工录入"
-        : `${row.source_name || "—"}${row.source_version ? ` / ${row.source_version}` : ""}`;
-      find("#candidate-editor-import-file").textContent = row.file_name ? `导入文件：${row.file_name}` : "";
+        : row.source_name || "未知来源";
+      const provenance = [];
+      if (row.file_name) provenance.push(`导入文件：${row.file_name}`);
+      if (note.source_category) provenance.push(`来源分类：${note.source_category}`);
+      if (Array.isArray(note.source_tags) && note.source_tags.length) provenance.push(`来源标签：${note.source_tags.join("、")}`);
+      find("#candidate-editor-import-file").textContent = provenance.join(" · ");
       find("#candidate-term").value = row.term_raw || "";
       find("#candidate-definition").value = row.definition_raw || "";
       find("#candidate-category").value = candidateEditorCategory(note);
@@ -632,6 +648,7 @@ async function showCandidateDetail(candidateId) {
     const row = await api(`/api/admin/candidates/${candidateId}`);
     const note = candidateNote(row);
     const examples = Array.isArray(note.examples) ? note.examples : [];
+    const sourceTags = Array.isArray(note.source_tags) ? note.source_tags : [];
     const variants = Array.isArray(note.variants) ? note.variants : [];
     const aiVariantSources = candidateAiVariantSources(variants);
     find("#candidate-detail-content").innerHTML = `
@@ -641,9 +658,11 @@ async function showCandidateDetail(candidateId) {
         <div class="detail-item"><dt>原始词形</dt><dd><strong>${escapeHtml(row.term_raw)}</strong></dd></div>
         <div class="detail-item"><dt>归一化词形</dt><dd>${escapeHtml(row.normalized_term)}</dd></div>
         <div class="detail-item wide"><dt>释义草稿</dt><dd class="detail-definition">${escapeHtml(row.definition_raw || "暂无释义")}</dd></div>
-        <div class="detail-item"><dt>数据导入来源</dt><dd>${row.source_type === "manual" ? "人工录入" : `${escapeHtml(row.source_name)} / ${escapeHtml(row.source_version)}`}</dd></div>
+        <div class="detail-item"><dt>数据导入来源</dt><dd>${candidateSourceLabel(row)}</dd></div>
         <div class="detail-item"><dt>导入文件</dt><dd>${escapeHtml(row.file_name || "—")}</dd></div>
         <div class="detail-item"><dt>词条分类</dt><dd>${escapeHtml(enumLabel(note.category || candidateEditorCategory(note)))}</dd></div>
+        ${note.source_category ? `<div class="detail-item"><dt>来源原始分类</dt><dd>${escapeHtml(note.source_category)}</dd></div>` : ""}
+        ${sourceTags.length ? `<div class="detail-item wide"><dt>来源标签</dt><dd>${sourceTags.map((tag) => `<span class="variant-type-badge">${escapeHtml(tag)}</span>`).join(" ")}</dd></div>` : ""}
         <div class="detail-item"><dt>创建时间</dt><dd>${escapeHtml(row.created_at)}</dd></div>
         <div class="detail-item"><dt>更新时间</dt><dd>${escapeHtml(row.updated_at)}</dd></div>
         <div class="detail-item"><dt>提交人 / 时间</dt><dd>${escapeHtml(row.submitted_by || "—")} / ${escapeHtml(row.submitted_at || "—")}</dd></div>
@@ -739,7 +758,7 @@ async function loadReviews(page = reviewState.page) {
       ["候选词形", (row) => `<strong>${escapeHtml(row.term_raw)}</strong>`],
       ["释义", (row) => escapeHtml(row.definition_raw?.slice(0, 120)), "long-text"],
       ["审核状态", (row) => statusBadge(row.status)],
-      ["来源", (row) => row.source_type === "manual" ? "人工录入" : escapeHtml(row.source_name)],
+      ["来源", candidateSourceLabel],
       ["提交人", (row) => escapeHtml(row.submitted_by || "—")],
       ["提交时间", (row) => escapeHtml(row.submitted_at || "—")],
     ],
@@ -806,7 +825,7 @@ async function showReviewDetail(id) {
     find("#review-detail-content").innerHTML = `
       <div class="change-banner"><div><span class="panel-kicker">CANDIDATE #${row.id}</span><h3>${escapeHtml(row.term_raw)}</h3><p>${escapeHtml(row.definition_raw)}</p></div><div class="change-banner-meta">${statusBadge(row.source_type)}${statusBadge(row.status)}</div></div>
       <div class="review-audit-grid">
-        <div class="policy-item"><span>录入来源</span><strong>${row.source_type === "manual" ? "人工录入" : escapeHtml(row.source_name)}</strong></div>
+        <div class="policy-item"><span>录入来源</span><strong>${candidateSourceLabel(row)}</strong></div>
         <div class="policy-item"><span>提交人 / 时间</span><strong>${escapeHtml(row.submitted_by || "—")}</strong><span>${escapeHtml(row.submitted_at || "—")}</span></div>
         <div class="policy-item"><span>审核人 / 时间</span><strong>${escapeHtml(row.reviewed_by || "—")}</strong><span>${escapeHtml(row.reviewed_at || "—")}</span></div>
       </div>
@@ -1045,30 +1064,103 @@ async function showEntryDetail(entryId) {
   }
 }
 
+const overviewState = { tab: "governance", metrics: {} };
+
+function overviewTime(value) {
+  if (!value) return "—";
+  return String(value).replace("T", " ").slice(0, 16);
+}
+
+function renderOverviewStats() {
+  const selected = overviewState.metrics[overviewState.tab] || [];
+  const icons = {
+    governance: ["候", "编", "审", "文"],
+    imports: ["批", "入", "误", "时"],
+    crawler: ["爬", "入", "误", "时"],
+  };
+  find("#stats").innerHTML = selected
+    .map(([label, value], index) => {
+      const compact = typeof value === "string" && value.length > 8 ? "compact-value" : "";
+      return `
+        <div class="stat-card">
+          <span>${escapeHtml(label)}</span>
+          <strong class="${compact}">${escapeHtml(value)}</strong>
+          <small aria-hidden="true">${icons[overviewState.tab]?.[index] || "·"}</small>
+        </div>`;
+    })
+    .join("");
+  document.querySelectorAll("[data-overview-tab]").forEach((button) => {
+    const active = button.dataset.overviewTab === overviewState.tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
 async function loadOverview() {
-  const [imports, candidates, reviews, entries] = await Promise.all([
-    api("/api/admin/imports"),
+  const hour = new Date().getHours();
+  find("#overview-greeting").textContent = hour >= 5 && hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+  const [importSummary, crawlSources, candidates, editing, returned, reviews, entries] = await Promise.all([
+    api("/api/admin/imports/summary"),
+    api("/api/admin/v3/crawl-sources"),
+    api("/api/admin/candidates?status=all&page=1&size=10"),
     api("/api/admin/candidates?status=editing&page=1&size=10"),
+    api("/api/admin/candidates?status=returned&page=1&size=10"),
     api("/api/admin/candidates?status=pending_review&page=1&size=10"),
     api("/api/admin/entries?status=published&riskLevel=all&page=1&size=10"),
   ]);
 
-  const statistics = [
-    ["导入运行", imports.length],
-    ["待处理候选", candidates.totalElements],
-    ["待审核候选", reviews.totalElements],
-    ["正式词条", entries.totalElements],
-  ];
-  const statIcons = ["↧", "◇", "✓", "文"];
-  find("#stats").innerHTML = statistics
-    .map(([label, value], index) => `
-      <div class="stat-card">
-        <span>${label}</span>
-        <strong>${value}</strong>
-        <small aria-hidden="true">${statIcons[index]}</small>
-      </div>`)
-    .join("");
+  const crawled = crawlSources.reduce(
+    (total, source) => total + (source.record_summary || [])
+      .filter((item) => ["imported", "duplicate", "ignored", "failed"].includes(item.status))
+      .reduce((subtotal, item) => subtotal + (Number(item.count) || 0), 0),
+    0,
+  );
+  const crawlerImported = crawlSources.reduce(
+    (total, source) => total + (source.record_summary || [])
+      .filter((item) => item.status === "imported")
+      .reduce((subtotal, item) => subtotal + (Number(item.count) || 0), 0),
+    0,
+  );
+  const crawlerFailed = crawlSources.reduce(
+    (total, source) => total + (source.record_summary || [])
+      .filter((item) => item.status === "failed")
+      .reduce((subtotal, item) => subtotal + (Number(item.count) || 0), 0),
+    0,
+  );
+  const lastCrawlAt = crawlSources
+    .map((source) => source.last_successful_at)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  overviewState.metrics = {
+    governance: [
+      ["候选词条", candidates.totalElements || 0],
+      ["待编辑候选", (Number(editing.totalElements) || 0) + (Number(returned.totalElements) || 0)],
+      ["待审核候选", reviews.totalElements || 0],
+      ["正式词条", entries.totalElements || 0],
+    ],
+    imports: [
+      ["导入运行", importSummary.run_count || 0],
+      ["累计导入候选", importSummary.candidate_count || 0],
+      ["导入失败", importSummary.failed_count || 0],
+      ["最近导入", overviewTime(importSummary.last_import_at)],
+    ],
+    crawler: [
+      ["累计爬取", crawled],
+      ["累计进入候选", crawlerImported],
+      ["爬取失败", crawlerFailed],
+      ["最近爬取", overviewTime(lastCrawlAt)],
+    ],
+  };
+  renderOverviewStats();
 }
+
+document.querySelectorAll("[data-overview-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    overviewState.tab = button.dataset.overviewTab;
+    renderOverviewStats();
+  });
+});
 
 async function loadIndexTasks() {
   const status = find("#index-task-status").value;
@@ -1082,11 +1174,225 @@ async function loadIndexTasks() {
   document.querySelectorAll("[data-index-task-retry]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/admin/recognition-v2/index/tasks/${button.dataset.indexTaskRetry}/retry`, { method: "POST" }); showToast("任务已重新入队"); await loadIndexTasks(); }));
 }
 
+const crawlState = { page: 1, size: 20, activeSource: null };
+let crawlPollTimer = null;
+let currentCrawlError = "";
+
+function crawlRecordBadge(status) {
+  const labels = {
+    pending: "待处理", processing: "待处理", retry_wait: "待处理",
+    imported: "已导入", duplicate: "已存在", ignored: "已忽略", failed: "失败",
+  };
+  const tone = status === "imported" ? "success" : ["pending", "processing", "retry_wait"].includes(status) ? "info" : status === "failed" ? "warning" : "";
+  return `<span class="badge ${tone}">${escapeHtml(labels[status] || status)}</span>`;
+}
+
+function crawlRecordResult(row) {
+  const error = row.error_message?.trim();
+  const summary = error
+    ? `<button type="button" class="crawl-error-summary" data-crawl-error="${row.id}" title="点击查看并复制完整错误">${escapeHtml(error)}</button>`
+    : "";
+  return `<div class="crawl-result">${crawlRecordBadge(row.status)}${summary}</div>`;
+}
+
+function openCrawlError(error) {
+  currentCrawlError = error;
+  find("#crawl-error-content").textContent = error;
+  find("#crawl-error-dialog").showModal();
+}
+
+function updateCrawlerSourceOptions(sources) {
+  const active = find("#crawl-active-source");
+  const record = find("#crawl-record-source");
+  const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source.source_code)}">${escapeHtml(source.source_name)}</option>`).join("");
+  if (!crawlState.activeSource || (crawlState.activeSource !== "all" && !sources.some((source) => source.source_code === crawlState.activeSource))) {
+    crawlState.activeSource = "all";
+  }
+  active.innerHTML = `<option value="all">全部来源</option>${sourceOptions}`;
+  active.value = crawlState.activeSource;
+  const recordValue = record.value || "all";
+  record.innerHTML = `<option value="all">全部来源</option>${sourceOptions}`;
+  record.value = [...record.options].some((option) => option.value === recordValue) ? recordValue : "all";
+}
+
+function aggregateCrawlerSources(sources) {
+  const statusCounts = {};
+  for (const source of sources) {
+    for (const item of source.record_summary || []) {
+      statusCounts[item.status] = (statusCounts[item.status] || 0) + (Number(item.count) || 0);
+    }
+  }
+  const statuses = sources.map((source) => source.current_status);
+  const currentStatus = statuses.includes("planning")
+    ? "planning"
+    : statuses.includes("running")
+      ? "running"
+      : statuses.some((status) => ["partial", "failed"].includes(status))
+        ? "partial"
+        : "idle";
+  const sum = (field) => sources.reduce((total, source) => total + (Number(source[field]) || 0), 0);
+  return {
+    source_code: "all",
+    source_name: "全部来源",
+    current_status: currentStatus,
+    discovered_count: sum("discovered_count"),
+    imported_count: sum("imported_count"),
+    duplicate_count: sum("duplicate_count"),
+    ignored_count: sum("ignored_count"),
+    failed_count: sum("failed_count"),
+    record_summary: Object.entries(statusCounts).map(([status, count]) => ({ status, count })),
+  };
+}
+
+function updateCrawlerProgress(source) {
+  const progress = find("#crawl-progress");
+  const active = ["planning", "running"].includes(source.current_status);
+  if (active) {
+    const processed = (source.imported_count || 0) + (source.duplicate_count || 0) + (source.ignored_count || 0) + (source.failed_count || 0);
+    progress.textContent = source.source_code === "all"
+      ? "有来源正在同步，请选择具体来源查看进度或停止任务。"
+      : source.current_status === "planning"
+      ? `正在准备 ${source.source_name} 的同步任务…`
+      : `正在同步 ${source.source_name}：已处理 ${processed} / ${source.discovered_count || 0} 条。`;
+    progress.dataset.state = "running";
+    progress.hidden = false;
+  } else if (source.current_status === "partial") {
+    progress.textContent = `${source.source_name} 有 ${source.failed_count || 0} 条同步失败，再次点击“立即同步”会自动重试。`;
+    progress.dataset.state = "partial";
+    progress.hidden = false;
+  } else {
+    progress.hidden = true;
+    progress.textContent = "";
+    progress.dataset.state = "idle";
+  }
+  if (active && !crawlPollTimer) {
+    crawlPollTimer = window.setInterval(() => loadCrawler(crawlState.page).catch(() => {}), 3000);
+  } else if (!active && crawlPollTimer) {
+    window.clearInterval(crawlPollTimer);
+    crawlPollTimer = null;
+  }
+}
+
+function renderCrawlerPagination(pageData) {
+  const host = find("#crawl-record-pagination");
+  if (!pageData.totalElements) {
+    host.innerHTML = "";
+    return;
+  }
+  const pageValue = Number(pageData.page);
+  const totalPagesValue = Number(pageData.totalPages);
+  const sizeValue = Number(pageData.size);
+  const page = Number.isFinite(pageValue) ? Math.max(1, Math.trunc(pageValue)) : 1;
+  const totalPages = Number.isFinite(totalPagesValue) ? Math.max(1, Math.trunc(totalPagesValue)) : 1;
+  const size = Number.isFinite(sizeValue) ? Math.max(1, Math.trunc(sizeValue)) : crawlState.size;
+  const start = (page - 1) * size + 1;
+  const end = Math.min(page * size, Number(pageData.totalElements));
+  host.innerHTML = `
+    <div class="pagination-info"><span>显示 ${start}–${end} 条，共 ${pageData.totalElements} 条</span><label class="pagination-size-field">每页<select id="crawl-record-size" class="pagination-size">${pageSizeOptions(pageData.size)}</select></label></div>
+    <div class="pagination-buttons">
+      <button class="page-button" data-crawl-record-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>‹</button>
+      <button class="page-button active" aria-current="page">${page} / ${totalPages}</button>
+      <button class="page-button" data-crawl-record-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>›</button>
+    </div>`;
+  host.querySelectorAll("[data-crawl-record-page]").forEach((button) => {
+    button.addEventListener("click", () => loadCrawler(Number(button.dataset.crawlRecordPage)));
+  });
+  find("#crawl-record-size").addEventListener("change", (event) => {
+    crawlState.size = Number(event.target.value);
+    loadCrawler(1);
+  });
+}
+
+async function loadCrawler(page = crawlState.page) {
+  const requestedPage = Number(page);
+  crawlState.page = Number.isFinite(requestedPage) ? Math.max(1, Math.trunc(requestedPage)) : 1;
+  const sources = await api("/api/admin/v3/crawl-sources");
+  updateCrawlerSourceOptions(sources);
+  if (!crawlState.activeSource) {
+    find("#crawl-source-summary").innerHTML = '<div class="empty-state">暂无可用来源</div>';
+    return;
+  }
+  const source = crawlState.activeSource === "all"
+    ? aggregateCrawlerSources(sources)
+    : sources.find((item) => item.source_code === crawlState.activeSource);
+  if (!source) return;
+  updateCrawlerProgress(source);
+  const checkpoint = source.checkpoint
+    ? (typeof source.checkpoint === "string" ? JSON.parse(source.checkpoint) : source.checkpoint)
+    : null;
+  const cumulative = Object.fromEntries(
+    (source.record_summary || []).map((item) => [item.status, Number(item.count) || 0]),
+  );
+  const cumulativeProcessed = ["imported", "duplicate", "ignored", "failed"]
+    .reduce((total, status) => total + (cumulative[status] || 0), 0);
+  const statistics = [
+    ["累计处理", cumulativeProcessed],
+    ["累计进入候选", cumulative.imported || 0],
+    ["本次处理", source.discovered_count || 0],
+    ["本次进入候选", source.imported_count || 0],
+  ];
+  find("#crawl-source-summary").innerHTML = statistics
+    .map(([label, value]) => `<div class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+  const allSources = crawlState.activeSource === "all";
+  find("#crawl-sync").disabled = allSources || !source.enabled || ["planning", "running"].includes(source.current_status);
+  find("#crawl-cancel").hidden = allSources || !["planning", "running"].includes(source.current_status);
+  find("#crawl-source-summary").title = allSources ? "全部来源汇总" : checkpoint ? `检查点：${JSON.stringify(checkpoint)}` : "尚未建立检查点";
+
+  const status = find("#crawl-record-status").value;
+  const recordSource = find("#crawl-record-source").value;
+  const data = await api(`/api/admin/v3/crawl-sources/records?source=${encodeURIComponent(recordSource)}&status=${encodeURIComponent(status)}&page=${crawlState.page}&size=${crawlState.size}`);
+  if (!data.items?.length && data.totalPages > 0 && crawlState.page > data.totalPages) {
+    return loadCrawler(data.totalPages);
+  }
+  find("#crawl-record-count").textContent = `共 ${data.totalElements || 0} 条`;
+  const crawlErrors = new Map(
+    (data.items || []).filter((row) => row.error_message).map((row) => [String(row.id), row.error_message]),
+  );
+  find("#crawl-records-table").innerHTML = renderTable(data.items || [], [
+    ["来源", (row) => escapeHtml(row.source_name)],
+    ["词条", (row) => escapeHtml(row.source_record_key)],
+    ["结果", crawlRecordResult],
+    ["归一化词形", (row) => escapeHtml(row.normalized_term || "—")],
+    ["候选", (row) => row.candidate_id ? `#${row.candidate_id}` : "—"],
+    ["原网页", (row) => { const url = safeExternalUrl(row.source_url); return url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">查看</a>` : "—"; }],
+  ]);
+  document.querySelectorAll("[data-crawl-error]").forEach((button) => {
+    button.addEventListener("click", () => openCrawlError(crawlErrors.get(button.dataset.crawlError) || "未知错误"));
+  });
+  renderCrawlerPagination(data);
+}
+
+async function crawlAction(action, confirmation) {
+  if (!crawlState.activeSource || crawlState.activeSource === "all") return;
+  if (confirmation && !window.confirm(confirmation)) return;
+  try {
+    const result = await api(`/api/admin/v3/crawl-sources/${encodeURIComponent(crawlState.activeSource)}/${action}`, { method: "POST" });
+    if (action === "sync" && result.sync_outcome === "no_change") {
+      showToast("未发现新内容，检查点保持不变");
+    } else if (action === "sync" && result.sync_outcome === "checkpoint_updated") {
+      showToast("没有待处理词条，检查点已更新");
+    } else if (action === "sync") {
+      showToast(`同步已启动，${result.queued_count || 0} 条词条等待处理`);
+    } else {
+      showToast("同步已停止");
+    }
+    await loadCrawler();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
 async function loadPage(pageName) {
   try {
+    if (pageName !== "crawler" && crawlPollTimer) {
+      window.clearInterval(crawlPollTimer);
+      crawlPollTimer = null;
+    }
     const loaders = {
       overview: loadOverview,
       imports: loadImports,
+      crawler: loadCrawler,
       candidates: loadCandidates,
       reviews: loadReviews,
       entries: loadEntries,
@@ -1101,6 +1407,28 @@ async function loadPage(pageName) {
 }
 
 find("#refresh-files").addEventListener("click", loadFiles);
+find("#crawl-refresh").addEventListener("click", () => loadCrawler());
+find("#crawl-record-search").addEventListener("click", () => loadCrawler(1));
+find("#crawl-active-source").addEventListener("change", (event) => {
+  crawlState.activeSource = event.target.value;
+  find("#crawl-record-source").value = event.target.value;
+  loadCrawler(1);
+});
+find("#crawl-sync").addEventListener("click", () => crawlAction("sync"));
+find("#crawl-cancel").addEventListener("click", () => crawlAction("cancel", "确认停止当前同步吗？"));
+find("#copy-crawl-error").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(currentCrawlError);
+    showToast("错误信息已复制");
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents(find("#crawl-error-content"));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    showToast("无法自动复制，已选中文本，请按 Ctrl+C");
+  }
+});
 find("#index-task-refresh").addEventListener("click", loadIndexTasks);
 find("#index-task-search").addEventListener("click", loadIndexTasks);
 find("#import-source").addEventListener("change", () => {
