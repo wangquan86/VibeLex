@@ -9,7 +9,22 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "vibelex.llm")
 public class LlmScenarioProperties {
+  private Map<String, Provider> providers = new LinkedHashMap<>();
   private Map<String, Scenario> scenarios = new LinkedHashMap<>();
+
+  public Map<String, Provider> getProviders() {
+    return providers;
+  }
+
+  public void setProviders(Map<String, Provider> providers) {
+    this.providers = providers == null ? new LinkedHashMap<>() : new LinkedHashMap<>(providers);
+  }
+
+  public Provider provider(String name) {
+    Provider provider = providers.get(name);
+    if (provider == null) throw new IllegalArgumentException("未配置 LLM provider: " + name);
+    return provider;
+  }
 
   public Map<String, Scenario> getScenarios() {
     return scenarios;
@@ -27,13 +42,13 @@ public class LlmScenarioProperties {
 
   public static class Scenario {
     private boolean enabled;
-    private String baseUrl;
-    private String apiKey;
-    private String model;
+    private String provider;
     private String prompt;
     private BigDecimal temperature = new BigDecimal("0.2");
     private int webSearchMaxKeyword = 3;
-    private int requestTimeoutSeconds = 90;
+    private boolean webSearchEnabled;
+    private int maximumSourceCharacters = 12000;
+    private BigDecimal minimumConfidence = new BigDecimal("0.6");
 
     public boolean isEnabled() {
       return enabled;
@@ -43,28 +58,12 @@ public class LlmScenarioProperties {
       this.enabled = enabled;
     }
 
-    public String getBaseUrl() {
-      return baseUrl;
+    public String getProvider() {
+      return provider;
     }
 
-    public void setBaseUrl(String baseUrl) {
-      this.baseUrl = baseUrl;
-    }
-
-    public String getApiKey() {
-      return apiKey;
-    }
-
-    public void setApiKey(String apiKey) {
-      this.apiKey = apiKey;
-    }
-
-    public String getModel() {
-      return model;
-    }
-
-    public void setModel(String model) {
-      this.model = model;
+    public void setProvider(String provider) {
+      this.provider = provider;
     }
 
     public String getPrompt() {
@@ -89,6 +88,70 @@ public class LlmScenarioProperties {
 
     public void setWebSearchMaxKeyword(int webSearchMaxKeyword) {
       this.webSearchMaxKeyword = webSearchMaxKeyword;
+    }
+
+    public boolean isWebSearchEnabled() {
+      return webSearchEnabled;
+    }
+
+    public void setWebSearchEnabled(boolean webSearchEnabled) {
+      this.webSearchEnabled = webSearchEnabled;
+    }
+
+    public int getMaximumSourceCharacters() {
+      return maximumSourceCharacters;
+    }
+
+    public void setMaximumSourceCharacters(int maximumSourceCharacters) {
+      this.maximumSourceCharacters = maximumSourceCharacters;
+    }
+
+    public BigDecimal getMinimumConfidence() {
+      return minimumConfidence;
+    }
+
+    public void setMinimumConfidence(BigDecimal minimumConfidence) {
+      this.minimumConfidence = minimumConfidence;
+    }
+  }
+
+  public static class Provider {
+    private String protocol;
+    private String baseUrl;
+    private String apiKey;
+    private String model;
+    private int requestTimeoutSeconds = 90;
+
+    public String getProtocol() {
+      return protocol;
+    }
+
+    public void setProtocol(String protocol) {
+      this.protocol = protocol;
+    }
+
+    public String getBaseUrl() {
+      return baseUrl;
+    }
+
+    public void setBaseUrl(String baseUrl) {
+      this.baseUrl = baseUrl;
+    }
+
+    public String getApiKey() {
+      return apiKey;
+    }
+
+    public void setApiKey(String apiKey) {
+      this.apiKey = apiKey;
+    }
+
+    public String getModel() {
+      return model;
+    }
+
+    public void setModel(String model) {
+      this.model = model;
     }
 
     public int getRequestTimeoutSeconds() {

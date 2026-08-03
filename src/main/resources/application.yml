@@ -2,7 +2,7 @@ spring:
   application:
     name: vibelex
   datasource:
-    url: jdbc:mysql://localhost:3306/vibelex_db
+    url: jdbc:mysql://localhost:3306/vibelex_db2
     username: root
     password: wjn2021$
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -21,10 +21,11 @@ vibelex:
     enabled: true
     worker:
       fixed-delay-millis: 3000
-      lease-seconds: 120
+      lease-seconds: ${VIBELEX_CRAWLING_WORKER_LEASE_SECONDS:240}
       actor-id: system
     popcidian:
       enabled: true
+      scheduled-enabled: false
       base-url: https://www.popcidian.com
       sitemap-url: https://www.popcidian.com/sitemap.xml
       sync-cron: "0 30 3 * * *"
@@ -32,20 +33,80 @@ vibelex:
       maximum-attempts: 3
       maximum-discovered-items: 5000
       user-agent: VibeLexCrawler/3.0
+    regengbaike:
+      enabled: true
+      scheduled-enabled: false
+      base-url: https://regengbaike.com
+      sitemap-url: https://regengbaike.com/addons/cms/sitemap/archives/sitemap.xml
+      sync-cron: "0 0 4 * * *"
+      request-timeout-seconds: 30
+      maximum-attempts: 3
+      maximum-discovered-items: 5000
+      user-agent: VibeLexCrawler/3.1
   import:
     max-file-bytes: 52428800
+    worker:
+      fixed-delay-millis: 3000
+      lease-seconds: ${VIBELEX_IMPORT_WORKER_LEASE_SECONDS:240}
+      maximum-attempts: 3
+      actor-id: system
   llm:
+    providers:
+      ark-search:
+        protocol: responses
+        base-url: ${VIBELEX_SEARCH_LLM_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
+        api-key: ${VIBELEX_SEARCH_LLM_API_KEY}
+        model: ${VIBELEX_SEARCH_LLM_MODEL:doubao-seed-2-0-lite-260428}
+        request-timeout-seconds: ${VIBELEX_SEARCH_LLM_REQUEST_TIMEOUT_SECONDS:180}
+      general-openai:
+        protocol: chat-completions
+        base-url: ${VIBELEX_GENERAL_LLM_BASE_URL:https://live-turing.cn.llm.tcljd.com/api/v1}
+        api-key: ${VIBELEX_GENERAL_LLM_API_KEY}
+        model: ${VIBELEX_GENERAL_LLM_MODEL:turing/gpt-5.5}
+        request-timeout-seconds: 90
     scenarios:
       variant-generation:
         # 仅控制候选词条批准时的自动生成；页面中的手动生成功能始终可用。
         enabled: false
-        base-url: https://ark.cn-beijing.volces.com/api/v3
-        api-key: fe4f4cd4-39f2-4908-ab5f-d5220159242b
-        model: doubao-seed-2-0-lite-260428
+        provider: ark-search
         prompt: classpath:prompts/variant-generation.md
         temperature: 0.2
         web-search-max-keyword: 2
-        request-timeout-seconds: 90
+        web-search-enabled: true
+      regengbaike-extraction:
+        enabled: true
+        provider: general-openai
+        prompt: classpath:prompts/regengbaike-extraction.md
+        temperature: 0.1
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      popcidian-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/popcidian-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      buzzword-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/buzzword-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      chime-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/chime-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
   recognition:
     v2:
       enabled: true

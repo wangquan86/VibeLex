@@ -465,7 +465,46 @@ Lex   = Lexicon，词库、词典、语言知识库
 ✅ 管理页面支持按来源汇总、按来源查询爬取记录和查看复制错误
 ```
 
+波普词典和热梗百科都通过各自的 `scheduled-enabled` 控制定时同步。设为 `false` 时仍可在管理页面手动爬取，只是不再由 Cron 自动发起任务。
+
 ### 8.4 后续规划
+
+### 8.4 V3.1 实施范围
+
+```text
+✅ 接入热梗百科 sitemap 与数字 ID 增量检查点
+✅ 抓取标题、摘要、正文、来源分类、发布时间和 canonical URL
+✅ 将 LLM 配置拆分为 provider 与 scenario，并支持普通 /chat/completions
+✅ AI 基于页面材料提取释义、来源背景和固定分类，并为有效词条整理 3 条完整例句
+✅ 服务端严格校验 JSON、分类、置信度及三条例句结构
+✅ 留存原始材料和合法 AI 输出，重试时避免重复网页或模型请求
+✅ 候选详情显示 AI 待复核标记；波普词典联网补充起源证据并在保留原始例句的前提下补足 3 条
+```
+
+热梗百科来源默认关闭。启用前需设置 `VIBELEX_GENERAL_LLM_BASE_URL`、
+`VIBELEX_GENERAL_LLM_API_KEY`、`VIBELEX_GENERAL_LLM_MODEL`，再将
+`vibelex.crawling.regengbaike.enabled` 设为 `true`。首次完整同步前应先完成设计文档中的
+10 条和 50 条真实抽样验证。
+
+抽样验证使用异步管理 API，不推进正式检查点：
+
+```http
+POST /api/admin/v3/crawl-sources/regengbaike/validation
+Content-Type: application/json
+
+{"count":10}
+```
+
+响应中的 `batch_token` 可用于查询该批次：
+
+```http
+GET /api/admin/v3/crawl-sources/regengbaike/records?batchToken={batch_token}&status=all&page=1&size=100
+```
+
+确认 10 条后将 `count` 改为 `50` 再调用；稳定样本集会复用前 10 条，只排队新增样本。
+抽样期间保持 `scheduled-enabled: false`，避免定时触发正式全量同步。
+
+### 8.5 后续规划
 
 ```text
 [ ] 接入更多网站候选发现来源和趋势采集流程
@@ -501,6 +540,7 @@ Lex   = Lexicon，词库、词典、语言知识库
 | [v2-recognition-and-es-design.md](docs/v2-recognition-and-es-design.md) | V2 识别与 Elasticsearch 混合召回实现基线 |
 | [openapi-v2.yaml](docs/openapi-v2.yaml) | V2 识别、索引管理和同步任务 OpenAPI 契约 |
 | [v3-crawler-candidate-import-design.md](docs/v3-crawler-candidate-import-design.md) | V3 多来源网站词条爬取、检查点、重试和候选导入实现基线 |
+| [v3.1-regengbaike-ai-crawler-design.md](docs/v3.1-regengbaike-ai-crawler-design.md) | V3.1 热梗百科抓取、普通 OpenAI 兼容模型提取与真实性校验 |
 
 
 ---

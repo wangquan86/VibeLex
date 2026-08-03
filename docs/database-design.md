@@ -869,6 +869,7 @@ CREATE TABLE source_import_runs (
     initiated_by VARCHAR(128) NOT NULL,
     started_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     finished_at DATETIME(3) NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
     PRIMARY KEY (id),
     UNIQUE KEY uk_import_id_fingerprint (id, import_fingerprint),
@@ -883,6 +884,8 @@ CREATE TABLE source_import_runs (
 ```
 
 CHIME 文件由操作者手工放入项目 `data/` 目录。V1 对手工提供的 CHIME 文件默认通过版本、格式样例和权利核验：未提供版本时使用 `manual-local`，许可证状态默认 `approved`，核验者默认 `system`。系统仍计算并保存实际文件哈希，Importer 在运行时检测文件格式和字段。
+
+`updated_at` 记录任务最近一次领取词条、统计变化或状态变化的时间，供管理页面判断任务是否仍在推进。
 
 只有同时满足以下条件才允许开始解析和候选写入：
 

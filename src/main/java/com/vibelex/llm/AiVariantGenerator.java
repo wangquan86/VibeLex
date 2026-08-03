@@ -5,15 +5,11 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,18 +30,19 @@ public class AiVariantGenerator {
   private final PromptTemplateLoader prompts;
   private final ObjectMapper mapper;
   private final TermNormalizer normalizer;
-  private final HttpClient client =
-      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+  private final ResponsesWebSearchLlmClient client;
 
   public AiVariantGenerator(
       LlmScenarioProperties properties,
       PromptTemplateLoader prompts,
       ObjectMapper mapper,
-      TermNormalizer normalizer) {
+      TermNormalizer normalizer,
+      ResponsesWebSearchLlmClient client) {
     this.properties = properties;
     this.prompts = prompts;
     this.mapper = mapper;
     this.normalizer = normalizer;
+    this.client = client;
   }
 
   public boolean isEnabled() {
@@ -54,47 +51,30 @@ public class AiVariantGenerator {
 
   public List<GeneratedVariant> generate(String term, String definition) {
     LlmScenarioProperties.Scenario scenario = properties.scenario(SCENARIO);
-    String baseUrl = required(scenario.getBaseUrl(), "base-url").replaceAll("/+$", "");
+    LlmScenarioProperties.Provider provider =
+        properties.provider(required(scenario.getProvider(), "provider"));
+    required(provider.getBaseUrl(), "base-url");
+    if (!"responses".equals(provider.getProtocol()))
+      throw new IllegalStateException("变体生成场景必须使用 responses provider");
     String prompt = renderPrompt(prompts.load(scenario.getPrompt()), term, definition);
-    Map<String, Object> body =
-        Map.of(
-            "model", required(scenario.getModel(), "model"),
-            "temperature", scenario.getTemperature(),
-            "instructions", prompt,
-            "input", "请依据以上规则处理当前词条并返回 JSON 结果。",
-            "tools",
-                List.of(
-                    Map.of(
-                        "type",
-                        "web_search",
-                        "max_keyword",
-                        Math.max(1, Math.min(50, scenario.getWebSearchMaxKeyword())))));
     try {
       long startedAt = System.nanoTime();
-      log.info("开始调用 Responses 联网变体生成，model={}", scenario.getModel());
-      HttpRequest request =
-          HttpRequest.newBuilder()
-              .uri(URI.create(baseUrl + "/responses"))
-              .timeout(Duration.ofSeconds(Math.max(1, scenario.getRequestTimeoutSeconds())))
-              .header("Authorization", "Bearer " + required(scenario.getApiKey(), "api-key"))
-              .header("Content-Type", "application/json")
-              .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-              .build();
-      HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-      if (response.statusCode() < 200 || response.statusCode() >= 300) {
-        log.warn(
-            "Responses 联网变体生成失败，status={}, body={}",
-            response.statusCode(),
-            abbreviate(response.body()));
-        throw new IllegalStateException("LLM 返回 HTTP " + response.statusCode());
-      }
-      log.debug("Responses 联网变体生成原始响应：{}", response.body());
-      JsonNode responseJson = mapper.readTree(response.body());
+      log.info("开始调用 Responses 联网变体生成，model={}", provider.getModel());
+      LlmRequest request =
+          new LlmRequest(
+              required(provider.getModel(), "model"),
+              prompt,
+              "请依据以上规则处理当前词条并返回 JSON 结果。",
+              scenario.getTemperature(),
+              provider.getRequestTimeoutSeconds());
+      ResponsesWebSearchLlmClient.ResponsesResult response =
+          client.completeWebSearch(request, scenario.getWebSearchMaxKeyword());
+      JsonNode responseJson = response.response();
       int searchCount = responseJson.path("usage").path("tool_usage").path("web_search").asInt();
       if (searchCount < 1) {
         log.warn(
             "Responses 联网变体生成未触发搜索，model={}, elapsedMs={}",
-            scenario.getModel(),
+            provider.getModel(),
             elapsedMillis(startedAt));
         return List.of();
       }
@@ -102,27 +82,23 @@ public class AiVariantGenerator {
       if (citations.isEmpty()) {
         log.warn(
             "Responses 联网变体生成未返回有效结构化引用，丢弃结果，model={}, elapsedMs={}",
-            scenario.getModel(),
+            provider.getModel(),
             elapsedMillis(startedAt));
         return List.of();
       }
-      String content = responseText(responseJson);
+      String content = response.text();
       List<GeneratedVariant> generated = parse(content, term, citations);
       log.info(
           "Responses 联网变体生成完成，model={}, webSearchCount={}, citationCount={}, variantCount={}, elapsedMs={}",
-          scenario.getModel(),
+          provider.getModel(),
           searchCount,
           citations.size(),
           generated.size(),
           elapsedMillis(startedAt));
       return generated;
     } catch (IOException e) {
-      log.warn("Responses 联网变体生成网络请求失败", e);
-      throw new IllegalStateException("LLM 变体生成请求失败", e);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.warn("Responses 联网变体生成请求被中断", e);
-      throw new IllegalStateException("LLM 变体生成请求被中断", e);
+      log.warn("Responses 联网变体生成结果解析失败", e);
+      throw new IllegalStateException("LLM 变体生成结果解析失败", e);
     } catch (RuntimeException e) {
       log.warn("Responses 联网变体生成处理失败: {}", e.getMessage(), e);
       throw e;

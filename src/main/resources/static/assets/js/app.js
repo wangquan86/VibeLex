@@ -8,6 +8,13 @@ const escapeHtml = (value) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+function formatDateTime(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "—";
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  return match ? `${match[1]} ${match[2]}` : text;
+}
+
 function safeExternalUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -24,18 +31,24 @@ const ENUM_LABELS = {
   succeeded: "成功",
   partial_success: "部分成功",
   failed: "失败",
+  cancelled: "已停止",
   running: "运行中",
   idle: "空闲",
   planning: "规划中",
   partial: "部分失败",
   retry_wait: "等待重试",
   duplicate: "重复跳过",
+  imported: "已导入",
   ignored: "已忽略",
   full: "全量",
   incremental: "增量",
   editing: "编辑中",
   pending: "待处理",
   processing: "处理中",
+  parse: "解析",
+  deduplicate: "判重",
+  ai_enrichment: "AI 丰富化",
+  candidate_creation: "创建候选",
   UPSERT: "写入/更新",
   DELETE: "删除",
   pending_review: "审核中",
@@ -60,6 +73,15 @@ const ENUM_LABELS = {
   homophone: "谐音表达",
   abbreviation: "缩写",
   template_phrase: "模板句式",
+  number_code: "数字暗语",
+  emotion_expression: "情绪表达",
+  sarcasm: "反讽表达",
+  foreign_term: "外来语",
+  fandom_term: "饭圈用语",
+  game_term: "游戏用语",
+  acg_term: "ACG 用语",
+  livestream_term: "直播用语",
+  workplace_term: "职场用语",
   other: "其他",
   neutral: "中性",
   positive: "正向",
@@ -180,7 +202,7 @@ function showToast(message) {
 }
 
 function statusBadge(status) {
-  const success = ["succeeded", "approved", "published"].includes(status);
+  const success = ["succeeded", "approved", "published", "imported"].includes(status);
   const info = ["running", "pending", "editing", "pending_review", "partial_success"].includes(status);
   const warning = ["returned", "rejected"].includes(status);
   const tone = success ? "success" : info ? "info" : warning ? "warning" : "";
@@ -307,21 +329,173 @@ async function loadFiles() {
     .join("");
 }
 
+const importState = { runId: null, page: 1, size: 20, status: "all", query: "" };
+let importPollTimer = null;
+
+function importRecordActions(row) {
+  const detail = `<button class="table-action" data-import-record-detail="${row.id}">详情</button>`;
+  const candidate = row.candidate_id ? `<button class="table-action" data-import-candidate="${row.candidate_id}">查看候选</button>` : "";
+  const retry = row.status === "failed" ? `<button class="table-action" data-import-record-retry="${row.id}">重新处理</button>` : "";
+  return `${detail}${candidate}${retry}`;
+}
+
+function renderImportPagination(data) {
+  const host = find("#import-record-pagination");
+  if (!data.totalElements) { host.innerHTML = ""; return; }
+  const page = Number(data.page) || 1;
+  const totalPages = Number(data.totalPages) || 1;
+  const size = Number(data.size) || importState.size;
+  host.innerHTML = `<div class="pagination-info"><span>第 ${page} / ${totalPages} 页，共 ${data.totalElements} 条</span><label class="pagination-size-field">每页<select id="import-record-size" class="pagination-size">${pageSizeOptions(size)}</select></label></div><div class="pagination-buttons"><button class="page-button" data-import-record-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>‹</button><button class="page-button active">${page} / ${totalPages}</button><button class="page-button" data-import-record-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>›</button></div>`;
+  host.querySelectorAll("[data-import-record-page]").forEach((button) => button.addEventListener("click", () => loadImportRecords(Number(button.dataset.importRecordPage))));
+  find("#import-record-size").addEventListener("change", (event) => { importState.size = Number(event.target.value); loadImportRecords(1); });
+}
+
+async function loadImportRecords(page = importState.page) {
+  if (!importState.runId) return;
+  importState.page = page;
+  const params = new URLSearchParams({ status: importState.status, query: importState.query, page: String(page), size: String(importState.size) });
+  const data = await api(`/api/admin/imports/${importState.runId}/records?${params}`);
+  const rows = data.items || [];
+  find("#import-records-table").innerHTML = renderTable(rows, [
+    ["序号", (row) => row.source_index],
+    ["词条", (row) => escapeHtml(row.term_raw)],
+    ["处理结果", (row) => statusBadge(row.status === "processing" ? "pending" : row.status)],
+    ["处理阶段", (row) => row.processor_stage ? escapeHtml(enumLabel(row.processor_stage)) : "—"],
+    ["候选状态", (row) => row.candidate_status ? statusBadge(row.candidate_status) : "—"],
+    ["导入时间", (row) => escapeHtml(formatDateTime(row.processed_at))],
+    ["重试", (row) => row.attempt_count || 0],
+    ["错误摘要", (row) => escapeHtml(row.error_message || "—")],
+  ], importRecordActions);
+  renderImportPagination(data);
+  document.querySelectorAll("[data-import-record-detail]").forEach((button) => button.addEventListener("click", () => showImportRecordDetail(button.dataset.importRecordDetail)));
+  document.querySelectorAll("[data-import-candidate]").forEach((button) => button.addEventListener("click", () => showCandidateDetail(button.dataset.importCandidate)));
+  document.querySelectorAll("[data-import-record-retry]").forEach((button) => button.addEventListener("click", () => retryImportRecord(button.dataset.importRecordRetry)));
+}
+
+async function showImportRecordDetail(recordId) {
+  try {
+    const row = await api(`/api/admin/imports/${importState.runId}/records/${recordId}`);
+    let note = {};
+    try { note = typeof row.processing_note === "string" ? JSON.parse(row.processing_note) : (row.processing_note || {}); } catch { note = {}; }
+    const examples = Array.isArray(note.examples) ? note.examples : [];
+    const references = Array.isArray(note.origin_references) ? note.origin_references.slice(0, 3) : [];
+    const ai = note.ai_enrichment || {};
+    const duplicateAction = row.duplicate_target_id
+      ? row.duplicate_target_type === "candidate"
+        ? `<button class="table-action" data-import-duplicate-candidate="${row.duplicate_target_id}">查看重复候选</button>`
+        : `<button class="table-action" data-import-duplicate-entry="${row.duplicate_target_id}">查看重复正式词条</button>`
+      : "—";
+    find("#import-record-detail-content").innerHTML = `
+      <dl class="detail-grid">
+        <div class="detail-item"><dt>记录 ID</dt><dd>${row.id}</dd></div>
+        <div class="detail-item"><dt>处理结果</dt><dd>${statusBadge(row.status === "processing" ? "pending" : row.status)}</dd></div>
+        <div class="detail-item"><dt>词条</dt><dd><strong>${escapeHtml(row.term_raw)}</strong></dd></div>
+        <div class="detail-item"><dt>处理阶段</dt><dd>${escapeHtml(enumLabel(row.processor_stage || "—"))}</dd></div>
+        <div class="detail-item wide"><dt>原始释义</dt><dd class="detail-definition">${escapeHtml(row.definition_raw || "—")}</dd></div>
+        <div class="detail-item wide"><dt>词条起源说明</dt><dd class="detail-definition">${escapeHtml(note.origin || "—")}</dd></div>
+        <div class="detail-item wide"><dt>起源参考链接</dt><dd>${references.length ? references.map((item) => { const url = safeExternalUrl(item.url); return url ? `<p><a class="evidence-link" href="${url}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.url)} ↗</a></p>` : ""; }).join("") : "—"}</dd></div>
+        <div class="detail-item wide"><dt>使用例句</dt><dd>${renderExampleList(examples, (example) => `<p>${escapeHtml(example)}</p>`)}</dd></div>
+        <div class="detail-item"><dt>AI 模型</dt><dd>${escapeHtml(row.ai_model || "—")}</dd></div>
+        <div class="detail-item"><dt>置信度</dt><dd>${ai.confidence ?? "—"}</dd></div>
+        <div class="detail-item wide"><dt>复核问题</dt><dd>${ai.needs_review ? `<span class="badge warning">需要复核</span> ${escapeHtml((ai.issues || []).join("、"))}` : "—"}</dd></div>
+        <div class="detail-item wide"><dt>失败原因</dt><dd class="detail-definition">${escapeHtml(row.error_message || "—")}</dd></div>
+        <div class="detail-item wide"><dt>重复目标</dt><dd>${duplicateAction}</dd></div>
+      </dl>`;
+    find("#import-record-detail-content").querySelector("[data-import-duplicate-candidate]")?.addEventListener("click", (event) => showCandidateDetail(event.currentTarget.dataset.importDuplicateCandidate));
+    find("#import-record-detail-content").querySelector("[data-import-duplicate-entry]")?.addEventListener("click", (event) => showEntryDetail(event.currentTarget.dataset.importDuplicateEntry));
+    find("#import-record-dialog").showModal();
+  } catch (error) { showToast(`词条详情加载失败：${error.message}`); }
+}
+
+async function retryImportRecord(recordId) {
+  try {
+    const result = await api(`/api/admin/imports/${importState.runId}/retry?recordId=${encodeURIComponent(recordId)}`, { method: "POST" });
+    showToast(result.retriedCount ? "词条已重新入队" : "当前没有可重试的失败词条");
+    await loadImportRecords(importState.page);
+    await loadImports();
+  } catch (error) { showToast(`重新处理失败：${error.message}`); }
+}
+
+async function cancelImportRun(runId) {
+  if (!window.confirm("停止后将不再处理新的词条，当前正在处理的词条可能仍会完成。确认停止吗？")) return;
+  try {
+    await api(`/api/admin/imports/${runId}/cancel`, { method: "POST" });
+    showToast("导入任务已停止");
+    await loadImports();
+    if (String(importState.runId) === String(runId)) await loadImportRecords(importState.page);
+  } catch (error) {
+    showToast(`停止任务失败：${error.message}`);
+  }
+}
+
+async function openImportRun(run) {
+  importState.runId = run.id;
+  importState.page = 1;
+  importState.status = "all";
+  importState.query = "";
+  find("#import-run-detail-title").textContent = `任务 #${run.id}：${run.source_name} / ${run.file_name}`;
+  find("#import-record-status").value = "all";
+  find("#import-record-query").value = "";
+  updateImportRetryButton(run);
+  find("#import-run-detail").hidden = false;
+  await loadImportRecords(1);
+  find("#import-run-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function updateImportRetryButton(run) {
+  const button = find("#import-retry-failed");
+  if (!button) return;
+  const failedCount = Number(run?.failed_count) || 0;
+  const cancelled = run?.status === "cancelled";
+  button.disabled = cancelled || failedCount === 0;
+  button.textContent = cancelled ? "任务已停止" : failedCount ? `重试失败词条（${failedCount}）` : "暂无失败词条";
+  button.title = cancelled ? "已停止的任务不能重试" : failedCount ? `重新处理 ${failedCount} 条失败词条` : "当前任务没有失败词条";
+}
+
+function importRunActions(row) {
+  const detail = `<button class="table-action" data-import-run="${row.id}">查看词条</button>`;
+  const cancel = row.status === "running"
+    ? `<button class="table-action danger-action" data-import-cancel="${row.id}">停止任务</button>`
+    : "";
+  return `${detail}${cancel}`;
+}
+
 async function loadImports() {
   await loadSources();
   await loadFiles();
   const runs = await api("/api/admin/imports");
+  if (importState.runId) updateImportRetryButton(runs.find((run) => String(run.id) === String(importState.runId)));
   find("#imports-table").innerHTML = renderTable(runs, [
     ["ID", (row) => row.id],
     ["数据来源", (row) => escapeHtml(row.source_name)],
     ["文件名称", (row) => row.file_name],
     ["来源版本", (row) => row.source_version],
     ["运行状态", (row) => statusBadge(row.status)],
+    ["更新时间", (row) => escapeHtml(formatDateTime(row.updated_at))],
     ["总数", (row) => row.total_count],
     ["候选数", (row) => row.candidate_count],
+    ["已存在", (row) => row.duplicate_count || 0],
+    ["失败", (row) => row.failed_count || 0],
     ["拒绝数", (row) => row.rejected_count],
     ["发起人", (row) => row.initiated_by],
-  ]);
+  ], importRunActions);
+  document.querySelectorAll("[data-import-run]").forEach((button) => {
+    const run = runs.find((item) => String(item.id) === String(button.dataset.importRun));
+    button.addEventListener("click", () => run && openImportRun(run));
+  });
+  document.querySelectorAll("[data-import-cancel]").forEach((button) => {
+    button.addEventListener("click", () => cancelImportRun(button.dataset.importCancel));
+  });
+  const active = runs.some((run) => run.status === "running");
+  if (active && !importPollTimer) {
+    importPollTimer = window.setInterval(async () => {
+      await loadImports();
+      if (importState.runId) await loadImportRecords(importState.page);
+    }, 3000);
+  } else if (!active && importPollTimer) {
+    window.clearInterval(importPollTimer);
+    importPollTimer = null;
+  }
 }
 
 const pageSizeOptions = (selected) =>
@@ -392,9 +566,9 @@ async function loadCandidates(page = candidateState.page) {
       ["ID", (row) => row.id],
       ["候选词形", (row) => `<strong>${escapeHtml(row.term_raw)}</strong>`],
       ["释义草稿", (row) => escapeHtml(row.definition_raw?.slice(0, 120)), "long-text"],
-      ["重复词条", (row) => row.duplicate_meme_id || "—"],
       ["来源", candidateSourceLabel],
       ["状态", (row) => statusBadge(row.status)],
+      ["进入候选时间", (row) => escapeHtml(formatDateTime(row.created_at))],
     ],
     candidateActions,
   );
@@ -651,6 +825,8 @@ async function showCandidateDetail(candidateId) {
     const sourceTags = Array.isArray(note.source_tags) ? note.source_tags : [];
     const variants = Array.isArray(note.variants) ? note.variants : [];
     const aiVariantSources = candidateAiVariantSources(variants);
+    const aiExtraction = note.ai_extraction || note.ai_enrichment || null;
+    const originReferences = Array.isArray(note.origin_references) ? note.origin_references.slice(0, 3) : [];
     find("#candidate-detail-content").innerHTML = `
       <dl class="detail-grid">
         <div class="detail-item"><dt>候选 ID</dt><dd>${row.id}</dd></div>
@@ -658,6 +834,7 @@ async function showCandidateDetail(candidateId) {
         <div class="detail-item"><dt>原始词形</dt><dd><strong>${escapeHtml(row.term_raw)}</strong></dd></div>
         <div class="detail-item"><dt>归一化词形</dt><dd>${escapeHtml(row.normalized_term)}</dd></div>
         <div class="detail-item wide"><dt>释义草稿</dt><dd class="detail-definition">${escapeHtml(row.definition_raw || "暂无释义")}</dd></div>
+        ${aiExtraction?.needs_review ? `<div class="detail-item wide"><dt>复核提示</dt><dd><span class="badge warning">AI 提取结果待复核</span>${aiExtraction.issues?.length ? ` ${escapeHtml(aiExtraction.issues.join("、"))}` : ""}</dd></div>` : ""}
         <div class="detail-item"><dt>数据导入来源</dt><dd>${candidateSourceLabel(row)}</dd></div>
         <div class="detail-item"><dt>导入文件</dt><dd>${escapeHtml(row.file_name || "—")}</dd></div>
         <div class="detail-item"><dt>词条分类</dt><dd>${escapeHtml(enumLabel(note.category || candidateEditorCategory(note)))}</dd></div>
@@ -669,7 +846,8 @@ async function showCandidateDetail(candidateId) {
         <div class="detail-item"><dt>审核人 / 时间</dt><dd>${escapeHtml(row.reviewed_by || "—")} / ${escapeHtml(row.reviewed_at || "—")}</dd></div>
         ${row.review_comment ? `<div class="detail-item wide"><dt>审核意见</dt><dd class="detail-definition">${escapeHtml(row.review_comment)}</dd></div>` : ""}
         <div class="detail-item wide"><dt>词条起源说明</dt><dd class="detail-definition">${escapeHtml(note.origin || "—")}</dd></div>
-        <div class="detail-item wide"><dt>词条起源参考链接</dt><dd>${safeExternalUrl(row.source_url) ? `<a class="evidence-link" href="${safeExternalUrl(row.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(row.source_url)} ↗</a>` : "—"}</dd></div>
+        <div class="detail-item wide"><dt>词条起源参考链接</dt><dd>${originReferences.length ? originReferences.map((item) => { const url = safeExternalUrl(item.url); return url ? `<p><a class="evidence-link" href="${url}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.url)} ↗</a></p>` : ""; }).join("") : "—"}</dd></div>
+        <div class="detail-item wide"><dt>数据集来源地址</dt><dd>${safeExternalUrl(row.source_url) ? `<a class="evidence-link" href="${safeExternalUrl(row.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(row.source_url)} ↗</a>` : "—"}</dd></div>
         <div class="detail-item"><dt>粗俗内容</dt><dd>${note.profanity ? "是" : "否"}</dd></div>
         <div class="detail-item"><dt>攻击性内容</dt><dd>${note.offense ? "是" : "否"}</dd></div>
         <div class="detail-item wide"><dt>使用例句 <span class="detail-count">${examples.length} 条</span></dt><dd>${renderExampleList(examples, (example) => `<p>${escapeHtml(example)}</p>`)}</dd></div>
@@ -1346,15 +1524,21 @@ async function loadCrawler(page = crawlState.page) {
     return loadCrawler(data.totalPages);
   }
   find("#crawl-record-count").textContent = `共 ${data.totalElements || 0} 条`;
+  const crawlRecords = (data.items || []).map((row, index) => ({
+    ...row,
+    display_index: (Number(data.page) - 1) * Number(data.size) + index + 1,
+  }));
   const crawlErrors = new Map(
-    (data.items || []).filter((row) => row.error_message).map((row) => [String(row.id), row.error_message]),
+    crawlRecords.filter((row) => row.error_message).map((row) => [String(row.id), row.error_message]),
   );
-  find("#crawl-records-table").innerHTML = renderTable(data.items || [], [
+  find("#crawl-records-table").innerHTML = renderTable(crawlRecords, [
+    ["序号", (row) => row.display_index],
     ["来源", (row) => escapeHtml(row.source_name)],
-    ["词条", (row) => escapeHtml(row.source_record_key)],
+    ["词条", (row) => escapeHtml(row.source_term || row.normalized_term || row.source_record_key)],
     ["结果", crawlRecordResult],
     ["归一化词形", (row) => escapeHtml(row.normalized_term || "—")],
     ["候选", (row) => row.candidate_id ? `#${row.candidate_id}` : "—"],
+    ["爬取时间", (row) => escapeHtml(formatDateTime(row.fetched_at))],
     ["原网页", (row) => { const url = safeExternalUrl(row.source_url); return url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">查看</a>` : "—"; }],
   ]);
   document.querySelectorAll("[data-crawl-error]").forEach((button) => {
@@ -1658,7 +1842,7 @@ find("#run-import").addEventListener("click", async () => {
     button.setAttribute("aria-busy", "true");
     progress.textContent = `正在导入 ${source.toUpperCase()}：${fileName}。请勿重复提交或关闭页面。`;
     progress.hidden = false;
-    await api(`/api/admin/imports/${encodeURIComponent(source)}`, {
+    const run = await api(`/api/admin/imports/${encodeURIComponent(source)}`, {
       method: "POST",
       body: JSON.stringify({
         fileName,
@@ -1667,8 +1851,8 @@ find("#run-import").addEventListener("click", async () => {
         upstreamRightsNote: find("#rights-note").value,
       }),
     });
-    showToast("数据导入完成");
-    loadImports();
+    showToast(run.reused ? "该文件版本已导入，已返回原任务" : "导入任务已创建，后台正在处理");
+    await loadImports();
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1677,6 +1861,32 @@ find("#run-import").addEventListener("click", async () => {
     progress.hidden = true;
     progress.textContent = "";
   }
+});
+
+find("#import-record-search").addEventListener("click", () => {
+  importState.status = find("#import-record-status").value;
+  importState.query = find("#import-record-query").value.trim();
+  loadImportRecords(1).catch((error) => showToast(`词条列表加载失败：${error.message}`));
+});
+find("#import-record-status").addEventListener("change", () => {
+  importState.status = find("#import-record-status").value;
+  loadImportRecords(1).catch((error) => showToast(`词条列表加载失败：${error.message}`));
+});
+find("#import-record-query").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") find("#import-record-search").click();
+});
+find("#import-run-detail-close").addEventListener("click", () => {
+  importState.runId = null;
+  find("#import-run-detail").hidden = true;
+});
+find("#import-retry-failed").addEventListener("click", async () => {
+  if (!importState.runId) return;
+  try {
+    const result = await api(`/api/admin/imports/${importState.runId}/retry`, { method: "POST" });
+    showToast(result.retriedCount ? `已重新入队 ${result.retriedCount} 条失败词条` : "当前没有可重试的失败词条");
+    await loadImportRecords(1);
+    await loadImports();
+  } catch (error) { showToast(`重新处理失败：${error.message}`); }
 });
 
 find("#recognize").addEventListener("click", async () => {

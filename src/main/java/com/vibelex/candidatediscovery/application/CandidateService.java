@@ -39,7 +39,21 @@ public class CandidateService {
   private static final Set<String> SUPPORTED_STATUSES =
       Set.of("editing", "pending_review", "returned", "published", "all");
   private static final Set<String> FIXED_CATEGORIES =
-      Set.of("other", "slang", "homophone", "abbreviation", "template_phrase");
+      Set.of(
+          "homophone",
+          "abbreviation",
+          "number_code",
+          "template_phrase",
+          "slang",
+          "emotion_expression",
+          "sarcasm",
+          "foreign_term",
+          "fandom_term",
+          "game_term",
+          "acg_term",
+          "livestream_term",
+          "workplace_term",
+          "other");
 
   private final MyBatisDatabase database;
   private final ObjectMapper mapper;
@@ -193,6 +207,34 @@ public class CandidateService {
     }
     appendCrawlerStrings(note.putArray("source_tags"), entry.sourceTags(), 20, 64);
     appendCrawlerStrings(note.putArray("examples"), entry.examples(), 20, 2000);
+    if (entry.origin() != null && !entry.origin().isBlank())
+      note.put("origin", entry.origin().trim());
+    if (!entry.originReferences().isEmpty()) {
+      ArrayNode references = note.putArray("origin_references");
+      entry.originReferences().stream()
+          .limit(3)
+          .forEach(
+              reference -> {
+                if (reference.title() == null
+                    || reference.title().isBlank()
+                    || reference.url() == null
+                    || reference.url().isBlank()) return;
+                references
+                    .addObject()
+                    .put("title", reference.title().trim())
+                    .put("url", reference.url().trim());
+              });
+    }
+    if (entry.processorVersion() != null) {
+      ObjectNode extraction = note.putObject("ai_extraction");
+      extraction.put("provider", entry.aiProvider());
+      extraction.put("model", entry.aiModel());
+      extraction.put("prompt_version", "regengbaike-extraction-v2");
+      extraction.put("processor_version", entry.processorVersion());
+      if (entry.confidence() != null) extraction.put("confidence", entry.confidence());
+      extraction.put("needs_review", entry.needsReview());
+      appendCrawlerStrings(extraction.putArray("issues"), entry.issues(), 50, 200);
+    }
     note.put("profanity", false);
     note.put("offense", false);
     note.putArray("variants");
@@ -597,6 +639,7 @@ public class CandidateService {
       // original discovery evidence instead of adding a misleading duplicate manual source.
       snapshot.remove("variants");
       appendVariants(snapshot, note);
+      appendOriginEvidence(snapshot.withArray("evidence"), note);
       return snapshot;
     }
 
@@ -608,6 +651,7 @@ public class CandidateService {
     appendDefaultMatchRule(snapshot, term);
     appendSafetyPolicy(snapshot, note);
     appendEvidence(snapshot, candidate);
+    appendOriginEvidence(snapshot.withArray("evidence"), note);
     appendVariants(snapshot, note);
     return snapshot;
   }
@@ -703,6 +747,26 @@ public class CandidateService {
       appendVariantEvidenceItem(
               evidence, item.path("title").asString("联网搜索"), url, item.path("snippet").asString())
           .put("confidence", variant.path("confidence").asDouble(1))
+          .put("status", "active");
+    }
+  }
+
+  private void appendOriginEvidence(ArrayNode evidence, JsonNode note) {
+    Set<String> existingUrls = evidenceUrls(evidence);
+    double confidence = note.path("ai_enrichment").path("confidence").asDouble(1);
+    String origin = note.path("origin").asString().trim();
+    for (JsonNode item : note.path("origin_references")) {
+      String url = item.path("url").asString().trim();
+      if (url.isBlank() || url.length() > 2048 || !existingUrls.add(url)) continue;
+      String title = item.path("title").asString("起源参考").trim();
+      evidence
+          .addObject()
+          .put("source_layer", "explanation")
+          .put("source_name", title.isBlank() ? "起源参考" : title)
+          .put("source_url", url)
+          .put("evidence_role", "origin")
+          .put("evidence_note", origin)
+          .put("confidence", confidence)
           .put("status", "active");
     }
   }
@@ -860,10 +924,14 @@ public class CandidateService {
             ? objectNode
             : mapper.createObjectNode();
     note.put("category", category == null || category.isBlank() ? "other" : category.trim());
+    String currentOrigin = note.path("origin").asString("").trim();
     if (origin == null || origin.isBlank()) {
       note.remove("origin");
+      note.remove("origin_references");
     } else {
-      note.put("origin", origin.trim());
+      String editedOrigin = origin.trim();
+      note.put("origin", editedOrigin);
+      if (!editedOrigin.equals(currentOrigin)) note.remove("origin_references");
     }
     ArrayNode values = note.putArray("examples");
     if (examples != null) {

@@ -65,7 +65,7 @@ public class ChimeImporter implements CandidateImporter {
             new ImportedCandidate(i, null, term, text(item, "meaning"), SOURCE_URL, note));
       } catch (RuntimeException e) {
         rejected++;
-        if (errors.size() < 10) errors.add("#" + i + ": " + e.getMessage());
+        errors.add("#" + i + ": " + e.getMessage());
       }
     }
     return new ImportedBatch(root.size(), rejected, candidates, errors);
