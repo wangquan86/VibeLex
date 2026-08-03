@@ -64,7 +64,7 @@ ES 和 embedding 服务均为可降级依赖：ES 不可用时返回 V1 规则�
 
 ## 3. 识别 API
 
-机器可读的接口契约见 [openapi-v2.yaml](openapi-v2.yaml)，可导入 Apifox、Postman 或其他 OpenAPI 客户端使用。
+机器可读的接口契约见 [V2.0 OpenAPI](openapi.yaml)，可导入 Apifox、Postman 或其他 OpenAPI 客户端使用。
 
 ### 3.1 接口
 

@@ -4,3 +4,8 @@ target/
 *.iml
 *.log
 .DS_Store
+
+# Local and server runtime secrets. Commit only the sanitized template.
+.env
+.env.*
+!.env.example

@@ -66,7 +66,7 @@ public class BuzzwordImporter implements CandidateImporter {
         candidates.add(new ImportedCandidate(index, term, term, definition, SOURCE_URL, note));
       } catch (RuntimeException e) {
         rejected++;
-        if (errors.size() < 10) errors.add("#" + index + ": " + e.getMessage());
+        errors.add("#" + index + ": " + e.getMessage());
       }
     }
     return new ImportedBatch(root.size(), rejected, candidates, errors);

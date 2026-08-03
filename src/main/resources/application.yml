@@ -1,10 +1,12 @@
 spring:
   application:
     name: vibelex
+  config:
+    import: "optional:file:.env[.properties]"
   datasource:
-    url: jdbc:mysql://localhost:3306/vibelex_db
-    username: root
-    password: wjn2021$
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
   flyway:
     enabled: true
@@ -21,10 +23,11 @@ vibelex:
     enabled: true
     worker:
       fixed-delay-millis: 3000
-      lease-seconds: 120
+      lease-seconds: ${VIBELEX_CRAWLING_WORKER_LEASE_SECONDS:240}
       actor-id: system
     popcidian:
       enabled: true
+      scheduled-enabled: false
       base-url: https://www.popcidian.com
       sitemap-url: https://www.popcidian.com/sitemap.xml
       sync-cron: "0 30 3 * * *"
@@ -32,20 +35,80 @@ vibelex:
       maximum-attempts: 3
       maximum-discovered-items: 5000
       user-agent: VibeLexCrawler/3.0
+    regengbaike:
+      enabled: true
+      scheduled-enabled: false
+      base-url: https://regengbaike.com
+      sitemap-url: https://regengbaike.com/addons/cms/sitemap/archives/sitemap.xml
+      sync-cron: "0 0 4 * * *"
+      request-timeout-seconds: 30
+      maximum-attempts: 3
+      maximum-discovered-items: 5000
+      user-agent: VibeLexCrawler/3.1
   import:
     max-file-bytes: 52428800
+    worker:
+      fixed-delay-millis: 3000
+      lease-seconds: ${VIBELEX_IMPORT_WORKER_LEASE_SECONDS:240}
+      maximum-attempts: 3
+      actor-id: system
   llm:
+    providers:
+      ark-search:
+        protocol: responses
+        base-url: ${VIBELEX_SEARCH_LLM_BASE_URL}
+        api-key: ${VIBELEX_SEARCH_LLM_API_KEY}
+        model: ${VIBELEX_SEARCH_LLM_MODEL}
+        request-timeout-seconds: ${VIBELEX_SEARCH_LLM_REQUEST_TIMEOUT_SECONDS:180}
+      general-openai:
+        protocol: chat-completions
+        base-url: ${VIBELEX_GENERAL_LLM_BASE_URL}
+        api-key: ${VIBELEX_GENERAL_LLM_API_KEY}
+        model: ${VIBELEX_GENERAL_LLM_MODEL}
+        request-timeout-seconds: ${VIBELEX_GENERAL_LLM_REQUEST_TIMEOUT_SECONDS:90}
     scenarios:
       variant-generation:
         # 仅控制候选词条批准时的自动生成；页面中的手动生成功能始终可用。
         enabled: false
-        base-url: https://ark.cn-beijing.volces.com/api/v3
-        api-key: fe4f4cd4-39f2-4908-ab5f-d5220159242b
-        model: doubao-seed-2-0-lite-260428
+        provider: ark-search
         prompt: classpath:prompts/variant-generation.md
         temperature: 0.2
         web-search-max-keyword: 2
-        request-timeout-seconds: 90
+        web-search-enabled: true
+      regengbaike-extraction:
+        enabled: true
+        provider: general-openai
+        prompt: classpath:prompts/regengbaike-extraction.md
+        temperature: 0.1
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      popcidian-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/popcidian-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      buzzword-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/buzzword-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
+      chime-enrichment:
+        enabled: true
+        provider: ark-search
+        prompt: classpath:prompts/chime-enrichment.md
+        temperature: 0.1
+        web-search-max-keyword: 2
+        web-search-enabled: true
+        maximum-source-characters: 12000
+        minimum-confidence: 0.6
   recognition:
     v2:
       enabled: true
@@ -56,19 +119,19 @@ vibelex:
       fallback-to-v1-on-search-failure: true
       fallback-to-v1-on-embedding-failure: true
       elasticsearch:
-        enabled: true
-        uris: ${VIBELEX_ES_URIS:http://10.145.12.11:9200/}
-        index-name: vibelex_sense_v2
-        index-alias: vibelex_sense_current
+        enabled: ${VIBELEX_ES_ENABLED:true}
+        uris: ${VIBELEX_ES_URIS}
+        index-name: ${VIBELEX_ES_INDEX_NAME:vibelex_sense_v2}
+        index-alias: ${VIBELEX_ES_INDEX_ALIAS:vibelex_sense_current}
         connect-timeout-millis: 1000
         request-timeout-millis: 3000
         lexical-top-k: 20
         semantic-top-k: 20
         minimum-semantic-score: 0.65
       embedding:
-        enabled: true
-        endpoint: https://xmedia-t.api.leiniao.com/edu-embedding/embedding/get_vector
-        model-name: bge-large-zh
+        enabled: ${VIBELEX_EMBEDDING_ENABLED:true}
+        endpoint: ${VIBELEX_EMBEDDING_ENDPOINT}
+        model-name: ${VIBELEX_EMBEDDING_MODEL_NAME:bge-large-zh}
         vector-dimension: 1024
         similarity: cosine
         connect-timeout-millis: 3000

@@ -17,7 +17,7 @@
 - 导入候选如何进入现有编辑、提交审核和正式发布流程；
 - 后续新增数据来源时必须遵循的扩展方式。
 
-本文是技术实现设计，不负责判断某个来源是否可以使用。来源许可证、隐私、留存和使用边界由 [data-source-governance.md](data-source-governance.md) 统一规定。
+本文是技术实现设计，不负责判断某个来源是否可以使用。来源许可证、隐私、留存和使用边界由 [data-source-governance.md](../../reference/data-source-governance.md) 统一规定。
 
 ---
 
@@ -49,10 +49,10 @@
 
 | 文档 | 负责内容 |
 |---|---|
-| [data-source-governance.md](data-source-governance.md) | 来源是否允许使用、许可证、隐私、留存和禁止事项 |
+| [data-source-governance.md](../../reference/data-source-governance.md) | 来源是否允许使用、许可证、隐私、留存和禁止事项 |
 | 本文档 | 获准文件如何解析、记录运行并进入候选池 |
-| [system-architecture-v1.md](system-architecture-v1.md) | 导入域与候选域、审核域、正式词条域的模块边界 |
-| [database-design.md](database-design.md) | `source_import_runs`、`candidate_entries` 等表结构 |
+| [system-architecture.md](system-architecture.md) | 导入域与候选域、审核域、正式词条域的模块边界 |
+| [database-schema.md](../../reference/database-schema.md) | `source_import_runs`、`candidate_entries` 等表结构 |
 
 导入模块必须执行治理门禁，但不自行作出法律判断：
 
@@ -276,6 +276,8 @@ cancelled
 - 文件整体无法解析时，运行标记为 `failed`；
 - 单条记录无效时记录拒绝原因，继续处理其他记录；
 - 同时存在成功和失败记录时标记为 `partial_success`；
+- 运行中的异步导入允许管理员软停止；停止后不再领取新词条，当前正在处理的单条记录允许完成；
+- 已停止任务标记为 `cancelled`，服务重启后不再继续，且不能通过失败词条重试恢复为 `running`；
 - V1.0 不自动重试；管理员修正文件或核验信息后重新发起；
 - 错误摘要只保存定位问题所需的最小信息，不保存完整原始数据。
 
@@ -297,7 +299,7 @@ editing → 编辑补充 → pending_review
                        └── returned → 再次编辑和提交
 ```
 
-审核中的候选禁止编辑。批准时由候选发布服务事务性写入正式词条和 `meme_revisions`，导入模块不参与审核决策。若 V1 AI 变体生成开关已开启，批准操作会在同一次发布快照中加入模型生成且经服务端校验的变体；详见 [V1 AI 变体生成](llm-variant-generation-v1.md)。
+审核中的候选禁止编辑。批准时由候选发布服务事务性写入正式词条和 `meme_revisions`，导入模块不参与审核决策。若 V1 AI 变体生成开关已开启，批准操作会在同一次发布快照中加入模型生成且经服务端校验的变体；详见 [V1 AI 变体生成](llm-variant-generation.md)。
 
 ---
 

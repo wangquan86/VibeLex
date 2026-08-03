@@ -6,6 +6,7 @@ import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,6 +35,13 @@ public class CrawlController {
     return service.startSync(sourceCode);
   }
 
+  @PostMapping("/{sourceCode}/validation")
+  public Map<String, Object> validation(
+      @PathVariable String sourceCode, @RequestBody ValidationRequest request) {
+    if (request == null) throw new IllegalArgumentException("请求体不能为空");
+    return service.startValidation(sourceCode, request.count());
+  }
+
   @PostMapping("/{sourceCode}/cancel")
   public Map<String, Object> cancel(@PathVariable String sourceCode) {
     return service.cancel(sourceCode);
@@ -44,8 +52,9 @@ public class CrawlController {
       @PathVariable String sourceCode,
       @RequestParam(defaultValue = "all") String status,
       @RequestParam(defaultValue = "1") int page,
-      @RequestParam(defaultValue = "20") int size) {
-    return service.records(sourceCode, status, page, size);
+      @RequestParam(defaultValue = "20") int size,
+      @RequestParam(required = false) String batchToken) {
+    return service.records(sourceCode, status, page, size, batchToken);
   }
 
   @GetMapping("/records")
@@ -53,7 +62,10 @@ public class CrawlController {
       @RequestParam(defaultValue = "all") String source,
       @RequestParam(defaultValue = "all") String status,
       @RequestParam(defaultValue = "1") int page,
-      @RequestParam(defaultValue = "20") int size) {
-    return service.records(source, status, page, size);
+      @RequestParam(defaultValue = "20") int size,
+      @RequestParam(required = false) String batchToken) {
+    return service.records(source, status, page, size, batchToken);
   }
+
+  public record ValidationRequest(int count) {}
 }

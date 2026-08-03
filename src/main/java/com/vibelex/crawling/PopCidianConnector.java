@@ -1,8 +1,8 @@
 package com.vibelex.crawling;
 
 import com.vibelex.crawling.CrawlConnector.CrawlPointer;
-import com.vibelex.crawling.CrawlConnector.CrawledEntry;
 import com.vibelex.crawling.CrawlConnector.EnumerationResult;
+import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
 import java.io.StringReader;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -129,7 +129,7 @@ public class PopCidianConnector implements CrawlConnector {
   }
 
   @Override
-  public CrawledEntry fetch(CrawlPointer pointer) {
+  public FetchedCrawlEntry fetch(CrawlPointer pointer) {
     String endpoint =
         properties.getPopcidian().getBaseUrl()
             + "/api/v1/entries?name="
@@ -143,7 +143,7 @@ public class PopCidianConnector implements CrawlConnector {
     }
   }
 
-  CrawledEntry parseEntry(String json, CrawlPointer pointer) {
+  FetchedCrawlEntry parseEntry(String json, CrawlPointer pointer) {
     try {
       JsonNode root = mapper.readTree(json);
       JsonNode result = root.path("result");
@@ -165,21 +165,26 @@ public class PopCidianConnector implements CrawlConnector {
       List<String> examples = strings(selected.path("examples"));
       String sourceCategory = categoryName(selected.path("category"));
       List<String> sourceTags = tagNames(selected.path("tags"));
-      return new CrawledEntry(
+      return new FetchedCrawlEntry(
           term,
           definition,
+          "",
           examples,
-          CATEGORY_MAPPING.getOrDefault(sourceCategory, "other"),
           sourceCategory,
           sourceTags,
           pointer.sourceUrl(),
           pointer.sourceRecordKey(),
+          pointer.sourceModifiedAt(),
           PARSER_VERSION);
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
       throw new IllegalStateException("无法解析波普词条: " + pointer.sourceUrl(), e);
     }
+  }
+
+  static String category(String sourceCategory) {
+    return CATEGORY_MAPPING.getOrDefault(sourceCategory, "other");
   }
 
   private String get(String url) {

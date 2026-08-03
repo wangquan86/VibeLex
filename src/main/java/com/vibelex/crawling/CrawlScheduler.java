@@ -18,13 +18,29 @@ public class CrawlScheduler {
 
   @Scheduled(cron = "${vibelex.crawling.popcidian.sync-cron:0 30 3 * * *}")
   public void schedulePopCidianSync() {
-    if (!properties.isEnabled() || !properties.getPopcidian().isEnabled()) return;
+    if (!properties.isEnabled()
+        || !properties.getPopcidian().isEnabled()
+        || !properties.getPopcidian().isScheduledEnabled()) return;
     try {
       executions.startSync(PopCidianConnector.SOURCE_CODE);
     } catch (IllegalStateException e) {
       log.debug("跳过波普词典同步任务: {}", e.getMessage());
     } catch (RuntimeException e) {
       log.warn("创建波普词典同步任务失败", e);
+    }
+  }
+
+  @Scheduled(cron = "${vibelex.crawling.regengbaike.sync-cron:0 0 4 * * *}")
+  public void scheduleRegengBaikeSync() {
+    if (!properties.isEnabled()
+        || !properties.getRegengbaike().isEnabled()
+        || !properties.getRegengbaike().isScheduledEnabled()) return;
+    try {
+      executions.startSync(RegengBaikeConnector.SOURCE_CODE);
+    } catch (IllegalStateException e) {
+      log.debug("跳过热梗百科同步任务: {}", e.getMessage());
+    } catch (RuntimeException e) {
+      log.warn("创建热梗百科同步任务失败", e);
     }
   }
 }

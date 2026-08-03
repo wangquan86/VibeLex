@@ -526,6 +526,7 @@ vibelex:
       actor-id: system
     popcidian:
       enabled: true
+      scheduled-enabled: false
       base-url: https://www.popcidian.com
       sitemap-url: https://www.popcidian.com/sitemap.xml
       sync-cron: "0 30 3 * * *"
@@ -535,7 +536,7 @@ vibelex:
       user-agent: VibeLexCrawler/3.0
 ```
 
-手动操作与定时器调用相同的同步能力；检查点为空时首次同步自然枚举全部内容。
+`scheduled-enabled` 只控制定时器是否自动发起同步，不影响管理页面手动操作；检查点为空时首次同步自然枚举全部内容。
 
 ---
 

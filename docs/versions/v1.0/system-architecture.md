@@ -24,11 +24,11 @@ V1 面向“可审核的网络语言知识库”最小闭环：将人工或已�
 
 | 文档 | 说明 |
 |---|---|
-| [database-design.md](database-design.md) | 正式词条、证据、风险与版本数据模型 |
-| [data-source-governance.md](data-source-governance.md) | 数据来源、授权、留存与复核治理 |
-| [dataset-import-v1.md](dataset-import-v1.md) | V1.0 多来源数据集导入的详细设计 |
-| [normalization-spec.md](normalization-spec.md) | 词形归一化规则 |
-| [recognition-engine-v1.md](recognition-engine-v1.md) | 已发布词条的文本识别能力 |
+| [database-schema.md](../../reference/database-schema.md) | 正式词条、证据、风险与版本数据模型 |
+| [data-source-governance.md](../../reference/data-source-governance.md) | 数据来源、授权、留存与复核治理 |
+| [dataset-import.md](dataset-import.md) | V1.0 多来源数据集导入的详细设计 |
+| [normalization.md](../../reference/normalization.md) | 词形归一化规则 |
+| [recognition-engine.md](recognition-engine.md) | 已发布词条的文本识别能力 |
 
 ---
 
@@ -260,7 +260,7 @@ Connector 在白名单端点内低频获取聚合趋势信号
 2. **格式解析**：按 Importer 读取 JSON、CSV、Parquet 或其他允许格式，拒绝异常文件、超大文件或未知字段。
 3. **字段映射**：映射为统一候选 DTO，例如 `term_raw`、`definition_raw`、`source_url`、`observed_at`、`source_record_key`。
 4. **最小化处理**：截断不必要长文本，剔除未允许字段和个人信息。
-5. **归一化**：依照 [normalization-spec.md](normalization-spec.md) 生成规范词形。
+5. **归一化**：依照 [normalization.md](../../reference/normalization.md) 生成规范词形。
 6. **去重与聚类**：先按来源内键幂等去重，再按规范词形、语言和相似度关联已有候选或正式词条。
 7. **质量与风险提示**：检测空释义、异常长度、敏感内容、低置信度或语言不匹配；产生提示，不替代人工结论。
 8. **候选持久化**：写入候选池与运行统计；无法处理的记录保存错误原因和最小诊断信息。

@@ -369,6 +369,8 @@ public class RecognitionService {
     m.put("canonical_term", e.term());
     m.put("sense_id", x.senseId);
     m.put("sense_no", x.senseNo);
+    m.put("definition", definition(x, data));
+    m.put("examples", examples(x, data));
     m.put("ambiguous", x.ambiguous);
     int[] range = cpWindow(text, x.start, x.end);
     m.put("matched_text", text.substring(range[0], range[1]));
@@ -379,6 +381,27 @@ public class RecognitionService {
     if (includeRecallSources) m.put("recall_sources", x.recallSources);
     m.put("policy", p);
     return m;
+  }
+
+  private String definition(Scored scored, Data data) {
+    if (scored.senseId == null) return null;
+    return data.senses().getOrDefault(scored.memeId, List.of()).stream()
+        .filter(sense -> sense.id() == scored.senseId)
+        .map(Sense::definition)
+        .findFirst()
+        .orElse(null);
+  }
+
+  private List<String> examples(Scored scored, Data data) {
+    if (scored.senseId == null) return List.of();
+    return data.examples().getOrDefault(scored.memeId, List.of()).stream()
+        .filter(
+            example ->
+                example.senseId() == null || Objects.equals(example.senseId(), scored.senseId))
+        .map(Example::text)
+        .distinct()
+        .limit(3)
+        .toList();
   }
 
   private List<int[]> findRaw(String text, String pattern) {

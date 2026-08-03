@@ -58,9 +58,9 @@ class PopCidianConnectorTest {
     var result = connector.parseEntry(json, pointer);
 
     assertThat(result.term()).isEqualTo("新词");
-    assertThat(result.definition()).isEqualTo("新的释义");
-    assertThat(result.examples()).containsExactly("新词的使用例句");
-    assertThat(result.category()).isEqualTo("slang");
+    assertThat(result.sourceSummary()).isEqualTo("新的释义");
+    assertThat(result.sourceExamples()).containsExactly("新词的使用例句");
+    assertThat(PopCidianConnector.category(result.sourceCategory())).isEqualTo("slang");
     assertThat(result.sourceCategory()).isEqualTo("互联网黑话");
     assertThat(result.sourceTags()).containsExactly("互联网", "职场");
     assertThat(result.parserVersion()).isEqualTo("popcidian-api-v1");
@@ -78,7 +78,7 @@ class PopCidianConnectorTest {
 
     var result = connector.parseEntry(json, pointer);
 
-    assertThat(result.category()).isEqualTo("other");
+    assertThat(PopCidianConnector.category(result.sourceCategory())).isEqualTo("other");
     assertThat(result.sourceCategory()).isEqualTo("游戏圈黑话");
   }
 

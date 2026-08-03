@@ -26,7 +26,7 @@ public class RecognitionIndex {
   private final MyBatisDatabase database;
   private final TermNormalizer normalizer;
   private final AtomicReference<Data> data =
-      new AtomicReference<>(new Data(List.of(), Map.of(), Map.of(), Map.of()));
+      new AtomicReference<>(new Data(List.of(), Map.of(), Map.of(), Map.of(), Map.of()));
 
   public RecognitionIndex(MyBatisDatabase database, TermNormalizer normalizer) {
     this.database = database;
@@ -38,6 +38,7 @@ public class RecognitionIndex {
   public void refresh() {
     Map<Long, Entry> entries = loadEntries();
     Map<Long, List<Sense>> senses = loadSenses();
+    Map<Long, List<Example>> examples = loadExamples();
     List<Anchor> anchors = loadVariantAnchors(entries);
     Map<Long, List<Rule>> rules = loadRules(entries, anchors);
 
@@ -46,6 +47,7 @@ public class RecognitionIndex {
             List.copyOf(anchors),
             Map.copyOf(entries),
             immutableLists(senses),
+            immutableLists(examples),
             immutableLists(rules)));
   }
 
@@ -93,7 +95,7 @@ public class RecognitionIndex {
     database
         .list(
             """
-                SELECT id, meme_id, sense_no, safety_policy_override
+                SELECT id, meme_id, sense_no, definition, safety_policy_override
                 FROM meme_senses
                 WHERE status = 'active'
                 """)
@@ -105,8 +107,30 @@ public class RecognitionIndex {
                         new Sense(
                             longValue(row, "id"),
                             intValue(row, "sense_no"),
+                            stringValue(row, "definition"),
                             nullableString(row, "safety_policy_override"))));
     return senses;
+  }
+
+  private Map<Long, List<Example>> loadExamples() {
+    Map<Long, List<Example>> examples = new HashMap<>();
+    database
+        .list(
+            """
+                SELECT meme_id, sense_id, example_text
+                FROM meme_examples
+                WHERE status = 'approved'
+                  AND example_role = 'positive'
+                ORDER BY id
+                """)
+        .forEach(
+            row ->
+                examples
+                    .computeIfAbsent(longValue(row, "meme_id"), ignored -> new ArrayList<>())
+                    .add(
+                        new Example(
+                            nullableLong(row, "sense_id"), stringValue(row, "example_text"))));
+    return examples;
   }
 
   private List<Anchor> loadVariantAnchors(Map<Long, Entry> entries) {
@@ -262,12 +286,15 @@ public class RecognitionIndex {
       List<Anchor> anchors,
       Map<Long, Entry> entries,
       Map<Long, List<Sense>> senses,
+      Map<Long, List<Example>> examples,
       Map<Long, List<Rule>> rules) {}
 
   public record Anchor(
       long memeId, Long senseId, String value, NormalizationProfile profile, String source) {}
 
-  public record Sense(long id, int no, String policyOverride) {}
+  public record Sense(long id, int no, String definition, String policyOverride) {}
+
+  public record Example(Long senseId, String text) {}
 
   public record Rule(
       Long senseId, String type, String value, String config, double weight, int priority) {}

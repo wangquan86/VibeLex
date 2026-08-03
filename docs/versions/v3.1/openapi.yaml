@@ -1,0 +1,1404 @@
+openapi: 3.0.3
+info:
+  title: VibeLex API
+  version: 3.1.0
+  description: VibeLex V3.1 当前接口契约，覆盖 V2 识别、Elasticsearch 索引管理、文件导入任务和网站词条爬取。
+paths:
+  /api/v2/recognitions:
+    post:
+      summary: 识别文本中的已发布网络词条
+      description: 使用 V1 规则、Elasticsearch 词法召回和语义候选完成词条识别。纯语义候选无法锚定到输入原文时不会返回。
+      requestBody:
+        required: true
+        description: 需要识别的原始文本、语言以及本次识别使用的可选参数。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecognitionRequest'
+      responses:
+        '200':
+          description: 识别完成；响应中的 degraded 为 true 时，表示至少一个外部召回路径发生降级。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecognitionResponse'
+        '400':
+          description: 请求字段无效、V2 未启用，或者关闭降级开关后的 Elasticsearch/embedding 调用失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '413':
+          description: 输入文本的 Unicode 码点数量超过服务端配置的长度上限。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/recognition-v2/index:
+    get:
+      summary: 查看 V2 Elasticsearch 索引状态
+      description: 请求当前配置的 Elasticsearch 查询别名，并返回功能开关、HTTP 状态码和别名名称。
+      responses:
+        '200':
+          description: Elasticsearch 查询别名状态获取成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexStatus'
+        '400':
+          description: Elasticsearch 未启用、连接失败或状态查询失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/recognition-v2/index/rebuild:
+    post:
+      summary: 全量重建 V2 Elasticsearch 义项索引
+      description: 当 V2、Elasticsearch 和 embedding 均启用时，同步创建时间戳物理索引、写入正式词条义项并切换查询别名；候选池不会进入索引。相关功能未启用时当前实现会直接返回 accepted=true，但不会执行重建。
+      responses:
+        '200':
+          description: 全量重建调用已正常返回。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexRebuildResponse'
+        '400':
+          description: 创建索引、生成向量、写入文档或切换别名失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/recognition-v2/index/tasks:
+    get:
+      summary: 分页查询 Elasticsearch 增量同步任务
+      description: 查询正式词条发布、修改、停用或归档后产生的 Elasticsearch 增量同步任务及各状态数量。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 任务状态筛选。all=全部状态；pending=等待处理或等待下次重试；processing=正在处理；succeeded=同步成功；failed=达到最大重试次数后仍失败。
+          schema:
+            type: string
+            default: all
+            enum: [all, pending, processing, succeeded, failed]
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始；未传时默认为第 1 页，服务端会把小于 1 的值修正为 1。
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: 每页任务数量；未传时默认为 20，服务端最终会把该值限制在 10 到 100 之间。
+          schema:
+            type: integer
+            minimum: 1
+            default: 20
+      responses:
+        '200':
+          description: 同步任务分页数据和状态汇总获取成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTaskPage'
+  /api/admin/recognition-v2/index/tasks/{id}/retry:
+    post:
+      summary: 将失败的 Elasticsearch 同步任务重新入队
+      description: 仅允许把 failed 状态的任务重置为 pending，并清空旧错误和完成时间。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 需要重新入队的索引同步任务主键 ID。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 失败任务已重置并重新进入待处理队列。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTaskRetryResponse'
+        '400':
+          description: 任务不存在、任务状态不是 failed，或者重新入队操作失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/sources:
+    get:
+      summary: 查询已注册的文件导入来源
+      responses:
+        '200':
+          description: 返回来源代码、显示名称和解析器版本。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportSource'
+  /api/admin/imports/files:
+    get:
+      summary: 查询指定来源可导入的本地文件
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [chime, buzzword]
+            default: chime
+      responses:
+        '200':
+          description: 返回 data 目录中与来源匹配的文件名。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: 来源不受支持或 data 目录无法读取。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/source-dictionary:
+    get:
+      summary: 查询管理页面使用的数据来源字典
+      responses:
+        '200':
+          description: 返回文件来源、网站来源和人工录入等用户可读名称。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+  /api/admin/imports:
+    get:
+      summary: 查询最近的文件导入任务
+      description: 按任务 ID 倒序返回最近 100 条导入运行。
+      responses:
+        '200':
+          description: 文件导入任务列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportRun'
+  /api/admin/imports/summary:
+    get:
+      summary: 查询文件导入汇总
+      responses:
+        '200':
+          description: 返回任务数、候选数、失败数和最近导入时间。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportSummary'
+  /api/admin/imports/{runId}/records:
+    get:
+      summary: 分页查询文件导入任务的逐条记录
+      parameters:
+        - $ref: '#/components/parameters/ImportRunId'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, queued, imported, duplicate, ignored, failed]
+            default: all
+        - name: query
+          in: query
+          required: false
+          description: 按原始词条或归一化词形模糊查询。
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 10
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: 逐条导入记录分页结果。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRecordPage'
+        '400':
+          description: 任务不存在或状态筛选值不受支持。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/{runId}/records/{recordId}:
+    get:
+      summary: 查询一条文件导入记录详情
+      parameters:
+        - $ref: '#/components/parameters/ImportRunId'
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 返回处理阶段、错误、原始信息和 AI 追溯字段。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRecord'
+        '400':
+          description: 任务或记录不存在。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/{runId}/retry:
+    post:
+      summary: 重新入队文件导入任务中的失败记录
+      description: 不传 recordId 时重试该任务的全部 failed 记录；已停止任务不能重试。
+      parameters:
+        - $ref: '#/components/parameters/ImportRunId'
+        - name: recordId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 返回实际重新入队的记录数量。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRetryResponse'
+        '400':
+          description: 任务已停止、任务不存在或没有指定的失败记录。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/{runId}/cancel:
+    post:
+      summary: 软停止运行中的文件导入任务
+      description: 停止领取新记录；当前已经发出的 AI 请求可能完成。停止后任务不能执行失败记录重试。
+      parameters:
+        - $ref: '#/components/parameters/ImportRunId'
+      responses:
+        '200':
+          description: 返回状态更新后的导入任务。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRun'
+        '400':
+          description: 任务不存在或任务不是 running 状态。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/imports/{source}:
+    post:
+      summary: 创建或复用一个文件导入任务
+      description: 相同指纹的活动或成功任务保持幂等；失败或取消后可以创建递增 attempt_no 的新任务。
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [chime, buzzword]
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '200':
+          description: 返回新建或复用的导入任务；reused 表示是否复用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRun'
+        '400':
+          description: 来源、文件或许可证信息不合法，或者文件解析失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources:
+    get:
+      summary: 查询全部网站爬取来源状态
+      responses:
+        '200':
+          description: 返回所有已注册来源的状态和记录汇总。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CrawlSourceStatus'
+  /api/admin/v3/crawl-sources/records:
+    get:
+      summary: 分页查询全部或指定来源的爬取记录
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, regengbaike, popcidian]
+            default: all
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, queued, imported, duplicate, ignored, failed]
+            default: all
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 10
+            maximum: 100
+            default: 20
+        - name: batchToken
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 爬取记录分页结果，管理页面据此生成跨页连续序号。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlRecordPage'
+        '400':
+          description: 来源或状态筛选不受支持。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources/{sourceCode}:
+    get:
+      summary: 查看单个爬取来源的运行状态
+      description: 查询来源检查点、当前运行状态、本次计数和累计记录汇总。抽样验证完成后 current_status 为 idle；存在最终失败记录时为 partial。
+      parameters:
+        - $ref: '#/components/parameters/CrawlSourceCode'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: 来源状态获取成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlSourceStatus'
+        '400':
+          description: 来源代码不受支持。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources/{sourceCode}/sync:
+    post:
+      summary: 手动启动来源的正式增量同步
+      description: scheduled-enabled 只影响 Cron；来源和全局爬虫启用时，本接口仍可手动启动。
+      parameters:
+        - $ref: '#/components/parameters/CrawlSourceCode'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: 返回来源最新状态、sync_outcome 和 queued_count。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlSyncResponse'
+        '400':
+          description: 来源未启用、正在运行、处理器配置不完整或来源枚举失败。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources/{sourceCode}/validation:
+    post:
+      summary: 启动有数量上限的爬虫抽样验证
+      description: >-
+        支持 regengbaike 和 popcidian。接口按稳定顺序选取 1 至 50 条样本并异步交给现有 Worker 处理，
+        完整执行网页抓取、对应来源的 AI 丰富、输出校验、判重和候选创建，但不会推进来源的正式增量检查点。
+        先请求 10、再请求 50 时，后一次样本集包含前 10 条；已进入终态的记录不会重复请求网页或 AI，通常只新增排队 40 条。
+      parameters:
+        - $ref: '#/components/parameters/CrawlSourceCode'
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrawlValidationRequest'
+      responses:
+        '200':
+          description: 抽样任务已启动，或指定样本已经全部处理。调用方应保存 batch_token，用它查询本次完整样本集。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlValidationResponse'
+        '400':
+          description: 数量不在 1 至 50 之间、来源不是热梗百科、来源或 AI 场景未启用、LLM provider 配置不完整，或者该来源已有运行中的任务。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources/{sourceCode}/records:
+    get:
+      summary: 分页查询单个来源的爬取记录
+      description: 使用抽样启动响应中的 batch_token，可只返回该次抽样选中的完整样本集。后续扩展到 50 条后，应使用最新响应中的 batch_token。
+      parameters:
+        - $ref: '#/components/parameters/CrawlSourceCode'
+        - $ref: '#/components/parameters/ActorId'
+        - name: batchToken
+          in: query
+          required: false
+          description: 抽样验证响应返回的批次 UUID；不传时查询该来源的全部历史记录。
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: all=全部；queued=等待、处理中或等待重试；其余值仅查询对应终态。
+          schema:
+            type: string
+            default: all
+            enum: [all, queued, imported, duplicate, ignored, failed]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: 每页记录数，服务端限制在 10 至 100 之间。
+          schema:
+            type: integer
+            minimum: 10
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: 爬取记录分页结果获取成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlRecordPage'
+        '400':
+          description: 来源或状态筛选值不受支持。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/admin/v3/crawl-sources/{sourceCode}/cancel:
+    post:
+      summary: 停止当前爬取或抽样任务
+      description: 停止领取新记录；正在执行的网页或 AI 请求返回后不会创建候选，并将记录恢复为 pending。
+      parameters:
+        - $ref: '#/components/parameters/CrawlSourceCode'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: 停止请求已处理，并返回来源最新状态。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlSourceStatus'
+        '400':
+          description: 来源代码不受支持。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+components:
+  parameters:
+    CrawlSourceCode:
+      name: sourceCode
+      in: path
+      required: true
+      description: 爬取来源代码；同步和抽样验证均支持 regengbaike 与 popcidian。
+      schema:
+        type: string
+        enum: [regengbaike, popcidian]
+      example: regengbaike
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: false
+      description: 管理操作发起人。未传时使用服务端默认 actor；示例环境可传 admin01。
+      schema:
+        type: string
+      example: admin01
+    ImportRunId:
+      name: runId
+      in: path
+      required: true
+      description: 文件导入任务主键 ID。
+      schema:
+        type: integer
+        format: int64
+  schemas:
+    ImportSource:
+      type: object
+      required: [code, name, parserVersion]
+      properties:
+        code:
+          type: string
+          enum: [chime, buzzword]
+        name:
+          type: string
+          example: CHIME
+        parserVersion:
+          type: string
+    ImportRequest:
+      type: object
+      required: [fileName]
+      additionalProperties: false
+      properties:
+        fileName:
+          type: string
+          minLength: 1
+          description: data 目录中的文件名，不接受目录穿越路径。
+        sourceVersion:
+          type: string
+          default: manual-local
+        sourceCommit:
+          type: string
+          nullable: true
+        licenseStatus:
+          type: string
+          enum: [approved]
+          description: 当前实现只允许 approved。
+        licenseSnapshot:
+          type: string
+          nullable: true
+        upstreamRightsNote:
+          type: string
+          nullable: true
+        licenseCheckedBy:
+          type: string
+          nullable: true
+    ImportRun:
+      type: object
+      required: [id, source_code, source_name, file_name, attempt_no, status, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        source_code:
+          type: string
+          enum: [chime, buzzword]
+        source_name:
+          type: string
+        source_version:
+          type: string
+        file_name:
+          type: string
+        file_hash:
+          type: string
+        attempt_no:
+          type: integer
+          minimum: 1
+        parser_version:
+          type: string
+        license_status:
+          type: string
+        status:
+          type: string
+          enum: [planning, running, succeeded, partial_success, failed, cancelled]
+        total_count:
+          type: integer
+          minimum: 0
+        accepted_count:
+          type: integer
+          minimum: 0
+        rejected_count:
+          type: integer
+          minimum: 0
+        candidate_count:
+          type: integer
+          minimum: 0
+        imported_count:
+          type: integer
+          minimum: 0
+        duplicate_count:
+          type: integer
+          minimum: 0
+        ignored_count:
+          type: integer
+          minimum: 0
+        failed_count:
+          type: integer
+          minimum: 0
+        error_summary:
+          type: string
+          nullable: true
+        initiated_by:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+        reused:
+          type: boolean
+          description: 仅创建任务响应返回；true 表示复用相同指纹的已有任务。
+    ImportSummary:
+      type: object
+      required: [run_count, candidate_count, failed_count]
+      properties:
+        run_count:
+          type: integer
+          format: int64
+          minimum: 0
+        candidate_count:
+          type: integer
+          format: int64
+          minimum: 0
+        failed_count:
+          type: integer
+          format: int64
+          minimum: 0
+        last_import_at:
+          type: string
+          format: date-time
+          nullable: true
+    ImportRecordPage:
+      type: object
+      required: [items, page, size, totalElements, totalPages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportRecord'
+        page:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          minimum: 10
+          maximum: 100
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          format: int64
+          minimum: 0
+    ImportRecord:
+      type: object
+      additionalProperties: true
+      required: [id, import_run_id, source_index, source_record_key, term_raw, normalized_term, status, attempt_count]
+      properties:
+        id:
+          type: integer
+          format: int64
+        import_run_id:
+          type: integer
+          format: int64
+        source_index:
+          type: integer
+          minimum: 0
+          description: 来源文件中的原始序号，管理页面直接显示。
+        source_record_key:
+          type: string
+        term_raw:
+          type: string
+        normalized_term:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, imported, duplicate, ignored, failed]
+        candidate_id:
+          type: integer
+          format: int64
+          nullable: true
+        candidate_status:
+          type: string
+          nullable: true
+        duplicate_target_type:
+          type: string
+          nullable: true
+          enum: [meme, variant, candidate]
+        duplicate_target_id:
+          type: integer
+          format: int64
+          nullable: true
+        attempt_count:
+          type: integer
+          minimum: 0
+        processor_stage:
+          type: string
+          nullable: true
+        error_type:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        ai_provider:
+          type: string
+          nullable: true
+        ai_model:
+          type: string
+          nullable: true
+        processor_version:
+          type: string
+          nullable: true
+        processed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 管理页面显示为“导入时间”。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ImportRetryResponse:
+      type: object
+      required: [retriedCount]
+      properties:
+        retriedCount:
+          type: integer
+          minimum: 0
+    CrawlValidationRequest:
+      type: object
+      required: [count]
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: 稳定样本集的目标总数。推荐先传 10，人工核对后再传 50。
+          example: 10
+    CrawlValidationResponse:
+      allOf:
+        - $ref: '#/components/schemas/CrawlSourceStatus'
+        - type: object
+          required: [validation_outcome, sample_count, queued_count, batch_token, checkpoint_will_advance]
+          properties:
+            validation_outcome:
+              type: string
+              enum: [started, already_processed]
+              description: started=至少一条记录已进入后台队列；already_processed=所选样本均已进入终态，无需再次处理。
+            sample_count:
+              type: integer
+              minimum: 0
+              maximum: 50
+              description: sitemap 中实际选出的样本总数。
+              example: 10
+            queued_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: 本次仍需后台处理的记录数。10 扩展到 50 时通常为 40。
+              example: 10
+            batch_token:
+              type: string
+              format: uuid
+              description: 本次样本集的批次标识，用于 records 接口过滤；扩展样本后应改用最新 token。
+              example: 8da87c49-4907-4c63-a97c-15b4ad00bd09
+            checkpoint_will_advance:
+              type: boolean
+              enum: [false]
+              description: 抽样验证固定为 false，表示完成后不会修改来源的正式增量检查点。
+    CrawlSyncResponse:
+      allOf:
+        - $ref: '#/components/schemas/CrawlSourceStatus'
+        - type: object
+          required: [sync_outcome, queued_count]
+          properties:
+            sync_outcome:
+              type: string
+              enum: [started, checkpoint_updated, no_change]
+              description: started=已排队；checkpoint_updated=无待处理记录但检查点变化；no_change=没有新内容。
+            queued_count:
+              type: integer
+              format: int64
+              minimum: 0
+    CrawlSourceStatus:
+      type: object
+      description: crawl_checkpoints、来源配置和记录汇总组合成的来源状态。数据库时间字段采用服务端 Jackson 的 ISO-8601 表示。
+      required: [source_code, source_name, enabled, current_status, record_summary]
+      properties:
+        source_code:
+          type: string
+          example: regengbaike
+        source_name:
+          type: string
+          example: 热梗百科
+        enabled:
+          type: boolean
+          description: 全局爬虫和该来源是否同时启用。
+          example: true
+        current_status:
+          type: string
+          enum: [idle, planning, running, partial, failed]
+          description: idle=无运行任务或成功完成；planning=正在读取 sitemap 并规划；running=后台处理中；partial=存在最终失败；failed=规划失败。
+        checkpoint:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 正式同步检查点。热梗百科使用 maximumArchiveId；抽样验证不会修改此字段。
+          example:
+            maximumArchiveId: 2251
+        active_batch_token:
+          type: string
+          format: uuid
+          nullable: true
+          description: 当前运行批次；任务结束或取消后清空。
+        validation_run:
+          type: boolean
+          description: 当前运行任务是否为抽样验证。
+        validation_target:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 50
+          description: 当前抽样验证的目标样本数；非抽样任务或任务结束后为空。
+        discovered_count:
+          type: integer
+          minimum: 0
+          description: 本次实际排队记录数。
+        imported_count:
+          type: integer
+          minimum: 0
+          description: 本次进入候选池的记录数。
+        duplicate_count:
+          type: integer
+          minimum: 0
+        ignored_count:
+          type: integer
+          minimum: 0
+        failed_count:
+          type: integer
+          minimum: 0
+        error_summary:
+          type: string
+          nullable: true
+          maxLength: 2000
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        record_summary:
+          type: array
+          description: 该来源全部历史记录按状态汇总，不仅限当前批次。
+          items:
+            $ref: '#/components/schemas/CrawlRecordSummary'
+    CrawlRecordSummary:
+      type: object
+      required: [status, count]
+      properties:
+        status:
+          $ref: '#/components/schemas/CrawlRecordStatus'
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+    CrawlRecordPage:
+      type: object
+      required: [items, page, size, totalElements, totalPages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CrawlRecord'
+        page:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          minimum: 10
+          maximum: 100
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          format: int64
+          minimum: 0
+    CrawlRecord:
+      type: object
+      required: [id, source_code, source_name, source_record_key, source_url, status, attempt_count]
+      properties:
+        id:
+          type: integer
+          format: int64
+        source_code:
+          type: string
+          example: regengbaike
+        source_name:
+          type: string
+          example: 热梗百科
+        source_record_key:
+          type: string
+          description: 来源记录的稳定键；热梗百科中是数字页面 ID，不是展示词名。
+          example: '1500'
+        source_term:
+          type: string
+          nullable: true
+          description: 从已保存原始材料中读取的页面词条名称，管理列表优先展示此字段。
+          example: 尊嘟假嘟
+        source_url:
+          type: string
+          format: uri
+          example: https://regengbaike.com/1500.html
+        status:
+          $ref: '#/components/schemas/CrawlRecordStatus'
+        batch_token:
+          type: string
+          format: uuid
+          nullable: true
+        normalized_term:
+          type: string
+          nullable: true
+        candidate_id:
+          type: integer
+          format: int64
+          nullable: true
+        duplicate_target_type:
+          type: string
+          nullable: true
+          enum: [meme, variant, candidate]
+        duplicate_target_id:
+          type: integer
+          format: int64
+          nullable: true
+        attempt_count:
+          type: integer
+          minimum: 0
+        processor_version:
+          type: string
+          nullable: true
+        ai_model:
+          type: string
+          nullable: true
+        error_type:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+          maxLength: 2000
+        fetched_at:
+          type: string
+          format: date-time
+          nullable: true
+        ai_processed_at:
+          type: string
+          format: date-time
+          nullable: true
+        processed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CrawlRecordStatus:
+      type: string
+      enum: [pending, processing, retry_wait, imported, duplicate, ignored, failed]
+      description: pending=待处理；processing=处理中；retry_wait=等待重试；imported=已进入候选；duplicate=重复跳过；ignored=页面不存在或 AI 判断非网络梗；failed=达到最大尝试次数。
+    RecognitionRequest:
+      type: object
+      description: V2 词条识别请求。
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: 待识别的原始文本。start_offset、end_offset 和 matched_text 均以此字段为基准；offset 按 Unicode 码点计算，不是 UTF-8 字节下标或 UTF-16 下标。
+          example: 这薯片吃起来特别 treetree 的，真的破防了。
+        language_code:
+          type: string
+          default: zh-CN
+          description: 输入文本的语言代码。字段为空或未传时使用 zh-CN；V2.0 主要保证简体中文互联网语境的识别效果，当前实现不会拒绝其他字符串值。
+          example: zh-CN
+        options:
+          type: object
+          description: 本次识别的可选覆盖参数；未传时全部使用服务端 V2 配置。
+          properties:
+            min_confidence:
+              type: number
+              format: double
+              minimum: 0
+              maximum: 1
+              description: 最终匹配结果的最低置信度，包含边界值 0 和 1；低于该值的候选不会返回，未传时使用服务端 min-confidence 配置。
+              example: 0.6
+            max_results:
+              type: integer
+              minimum: 1
+              maximum: 200
+              description: 本次请求最多返回的匹配结果数量，允许范围为 1 到 200；未传时使用服务端 max-results 配置。
+              example: 20
+            enable_semantic_recall:
+              type: boolean
+              description: 是否允许本次请求执行 embedding 和 Elasticsearch kNN 语义召回。true=允许语义召回；false=本次请求关闭语义召回。即使传 true，服务端语义或 embedding 总开关关闭时也不会执行。
+              default: true
+    RecognitionResponse:
+      type: object
+      description: V2 词条识别成功响应。
+      required: [request_id, matches, engine_version, index_version, degraded, processed_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: 服务端为本次识别请求生成的唯一 UUID，用于关联响应和服务端诊断日志。
+          example: bfe4ae60-e186-4a60-a417-2b3a7ecb8c8c
+        matches:
+          type: array
+          description: 按置信度降序、起始位置升序处理后的最终词条命中列表；没有符合条件的结果时返回空数组。
+          items:
+            $ref: '#/components/schemas/Match'
+        engine_version:
+          type: string
+          enum: ['2.0']
+          description: 生成该响应的识别引擎协议版本。2.0=V1 规则、Elasticsearch 词法和语义候选进入统一校验链的 V2 引擎。
+          example: '2.0'
+        index_version:
+          type: string
+          description: 本次识别配置使用的 Elasticsearch 查询别名。当前实现返回别名而不是时间戳物理索引名称；默认值为 vibelex_sense_current。
+          example: vibelex_sense_current
+        degraded:
+          type: boolean
+          description: 本次识别是否发生外部召回降级。true=Elasticsearch 未启用/词法查询失败或 embedding/语义查询失败，并按配置继续使用可用路径；false=未触发降级逻辑。该字段不表示是否命中词条。
+          example: false
+        processed_at:
+          type: string
+          format: date-time
+          description: 服务端完成本次识别并构造响应时的 UTC 时间，采用 ISO-8601 格式。
+          example: '2026-07-28T08:30:00Z'
+    Match:
+      type: object
+      description: 一个通过召回、上下文评分、义项消歧、重叠处理和阈值裁剪的最终词条命中。
+      required: [meme_id, meme_code, canonical_term, ambiguous, matched_text, start_offset, end_offset, confidence, match_reason, policy]
+      properties:
+        meme_id:
+          type: integer
+          format: int64
+          description: 命中的正式词条在 MySQL meme_entries 表中的主键 ID。
+          example: 101
+        meme_code:
+          type: string
+          description: 命中词条的稳定业务编码，用于跨接口或跨环境识别词条，不等同于数据库主键。
+          example: MEME_000101
+        canonical_term:
+          type: string
+          description: 命中词条当前生效的标准名称；它可能与 matched_text 不同，因为原文可能命中的是变体或归一化写法。
+          example: 破防
+        sense_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 已确定义项在 meme_senses 表中的主键 ID；无法唯一确定义项、词条没有具体义项或结果被标记为歧义时返回 null。
+          example: 201
+        sense_no:
+          type: integer
+          nullable: true
+          description: 义项在当前词条内部的业务序号；已确定具体义项时返回对应序号，sense_id 为 null 时通常也为 null。
+          example: 1
+        definition:
+          type: string
+          nullable: true
+          description: 已确定义项的完整释义，内容来自 meme_senses.definition；无法唯一确定义项、词条没有具体义项或结果被标记为歧义时返回 null。
+          example: 因情绪受到强烈冲击而失去心理防线，常用于表达感动、委屈或被戳中痛点。
+        examples:
+          type: array
+          maxItems: 3
+          description: 已确定义项的已审核正向使用例句，包含该义项专属例句和词条通用例句，按记录顺序去重后最多返回 3 条；无法确定具体义项时返回空数组。
+          items:
+            type: string
+          example:
+            - 看到最后那段采访，我真的破防了。
+            - 他一句话就让我当场破防。
+            - 这个结局看得大家集体破防。
+        ambiguous:
+          type: boolean
+          description: 是否存在无法消除的义项歧义。true=最高候选义项在置信度和义项证据上并列，sense_id/sense_no 返回 null；false=不存在并列歧义。
+          example: false
+        matched_text:
+          type: string
+          description: 从请求 text 中按 start_offset 和 end_offset 截取出的实际命中文本，保留原文大小写、空格和全半角形式。
+          example: 破防
+        start_offset:
+          type: integer
+          minimum: 0
+          description: matched_text 在请求 text 中的 Unicode 码点起始位置，包含该位置；与 end_offset 共同构成半开区间 [start_offset, end_offset)。
+          example: 20
+        end_offset:
+          type: integer
+          minimum: 1
+          description: matched_text 在请求 text 中的 Unicode 码点结束位置，不包含该位置；该值必须大于 start_offset。
+          example: 22
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 经过 V1 规则与上下文评分、义项消歧和裁剪后的最终置信度，范围为 0 到 1，并保留最多四位小数。Elasticsearch 召回分数不会直接作为该字段返回或直接抬高该值。
+          example: 0.6
+        match_reason:
+          type: array
+          description: 形成该结果的匹配或上下文原因集合。可能值为 exact_match=精确词面规则命中；normalized_match=变体或归一化词面命中；variant:spacing=去除空格后的变体命中；pinyin_match=拼音规则命中；regex_match=正则规则命中；lexical=Elasticsearch 词法候选命中；semantic=Elasticsearch 语义候选命中；positive_context=命中正向上下文；negative_context=命中负向上下文；entity_exclusion=命中实体排除规则。数组可能同时包含多个值。
+          items:
+            type: string
+            enum: [exact_match, normalized_match, 'variant:spacing', pinyin_match, regex_match, lexical, semantic, positive_context, negative_context, entity_exclusion]
+            description: 单个匹配原因枚举值；各值含义见 match_reason 字段说明。
+        recall_sources:
+          type: array
+          description: 候选召回来源集合，仅当本次调用有外部候选参与统一校验时输出。可能值为 rule=V1 规则、变体或正则召回；lexical=Elasticsearch 词法召回，或语义候选进入输出前所需的词面锚定佐证；semantic=embedding 加 Elasticsearch kNN 语义召回。数组可能同时包含多个值。
+          items:
+            type: string
+            enum: [rule, lexical, semantic]
+            description: 单个召回来源枚举值；rule=规则召回，lexical=词法召回或词面锚定，semantic=语义召回。
+        policy:
+          description: 命中词条当前生效的识别、展示、生成、推荐和审核策略。
+          allOf:
+            - $ref: '#/components/schemas/MatchPolicy'
+    MatchPolicy:
+      type: object
+      description: 最终命中词条的安全和使用策略快照。
+      required: [detect_enabled, display_enabled, generate_enabled, recommend_enabled, risk_level, moderation_policy]
+      properties:
+        detect_enabled:
+          type: boolean
+          description: 词条是否允许被识别。true=允许进入识别索引和识别结果；false=不应被识别。正常返回的 Match 通常为 true。
+        display_enabled:
+          type: boolean
+          description: 词条是否允许在面向用户的界面展示。true=允许展示；false=调用方应隐藏或按内部策略处理。
+        generate_enabled:
+          type: boolean
+          description: 词条是否允许被生成式功能主动生成。true=允许生成；false=禁止主动生成，但不必然禁止识别。
+        recommend_enabled:
+          type: boolean
+          description: 词条是否允许被推荐。true=允许推荐；false=禁止推荐。归档词条无论数据库原值如何均返回 false。
+        risk_level:
+          type: string
+          enum: [none, low, medium, high, restricted]
+          description: 词条风险等级。none=无明显风险；low=低风险；medium=中风险，需要结合上下文；high=高风险，不建议主动生成或推荐；restricted=受限，仅用于内部识别、审核或特定场景。
+        moderation_policy:
+          type: string
+          enum: [normal, log_only, manual_review, block, restricted]
+          description: 词条建议处理策略。normal=正常处理；log_only=仅记录，不进行拦截；manual_review=需要人工审核；block=拦截、不展示或不生成；restricted=限制在指定内部场景使用。
+    IndexStatus:
+      type: object
+      description: 当前 V2 Elasticsearch 查询别名的状态。
+      required: [enabled, status, alias]
+      properties:
+        enabled:
+          type: boolean
+          description: Elasticsearch 检索功能是否在服务端配置中启用。true=已启用；false=未启用。当前接口只有在能够执行状态查询时才会正常返回。
+        status:
+          type: integer
+          description: Elasticsearch 查询别名接口返回的原始 HTTP 状态码，例如 200 表示别名存在且查询成功，404 表示别名不存在。
+          example: 200
+        alias:
+          type: string
+          description: 服务端配置并用于 V2 查询的 Elasticsearch 索引别名。
+          example: vibelex_sense_current
+    IndexRebuildResponse:
+      type: object
+      description: Elasticsearch 全量索引重建接口的响应。
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          enum: [true]
+          description: 重建方法是否正常返回。当前成功响应固定为 true；它表示调用未抛出异常，不代表在相关功能关闭时一定创建了新物理索引。
+          example: true
+    IndexTaskPage:
+      type: object
+      description: Elasticsearch 增量同步任务的分页结果和全量状态汇总。
+      required: [items, page, size, totalElements, summary]
+      properties:
+        items:
+          type: array
+          description: 当前页的索引同步任务列表，按任务 ID 倒序排列；当前页没有数据时返回空数组。
+          items:
+            $ref: '#/components/schemas/IndexTask'
+        page:
+          type: integer
+          description: 服务端实际使用的当前页码，从 1 开始。
+          example: 1
+        size:
+          type: integer
+          description: 服务端实际使用的每页数量，范围为 10 到 100。
+          example: 20
+        totalElements:
+          type: integer
+          format: int64
+          description: 符合 status 筛选条件的任务总数，不是当前页任务数量。
+          example: 36
+        summary:
+          type: array
+          description: 不受当前 status 筛选影响的全量任务状态计数；数据库中没有某种状态时，该状态可能不会出现在数组中。
+          items:
+            $ref: '#/components/schemas/IndexTaskSummary'
+    IndexTaskSummary:
+      type: object
+      description: 一种索引同步任务状态及其任务数量。
+      required: [status, count]
+      properties:
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+          description: 被统计的任务状态。pending=等待处理或等待重试；processing=正在处理；succeeded=同步成功；failed=达到最大重试次数后仍失败。
+        count:
+          type: integer
+          format: int64
+          description: 当前 status 状态下的任务总数。
+          example: 12
+    IndexTask:
+      type: object
+      description: 一条正式词条到 Elasticsearch 派生索引的增量同步任务。
+      required: [id, meme_id, operation, status, retry_count, next_retry_at, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: index_sync_tasks 表中的任务主键 ID。
+          example: 1001
+        meme_id:
+          type: integer
+          format: int64
+          description: 需要同步或删除 Elasticsearch 文档的正式词条主键 ID。
+          example: 101
+        operation:
+          type: string
+          enum: [UPSERT, DELETE]
+          description: 索引操作类型。UPSERT=根据 MySQL 当前正式词条数据新增或覆盖 Elasticsearch 文档；DELETE=删除该词条对应的 Elasticsearch 文档。
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+          description: 任务当前状态。pending=等待处理或等待到 next_retry_at 后重试；processing=任务已被工作线程领取并正在执行；succeeded=最近一次同步成功；failed=自动重试达到上限后仍失败，可人工重新入队。
+        retry_count:
+          type: integer
+          minimum: 0
+          description: 当前任务已经累计的失败重试次数；新任务为 0，人工重新入队时重置为 0，达到 5 次失败后进入 failed。
+          example: 0
+        next_retry_at:
+          type: string
+          format: date-time
+          description: pending 任务允许被再次领取的最早数据库时间；首次入队通常为当前时间，失败重试时按退避策略推迟。
+        locked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: processing 任务最近一次被领取和锁定的数据库时间；尚未领取或已恢复的任务可以为 null，锁定超过 10 分钟会被视为陈旧任务并恢复为 pending。
+        last_error:
+          type: string
+          nullable: true
+          description: 最近一次同步失败的错误摘要，最长保留 2000 个字符；尚未失败或重试成功后为 null。
+        created_at:
+          type: string
+          format: date-time
+          description: 该词条同步任务首次创建的数据库时间。
+        updated_at:
+          type: string
+          format: date-time
+          description: 该任务操作、状态、重试次数或其他字段最近一次更新的数据库时间。
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次成功完成同步的数据库时间；任务尚未成功、重新入队或失败时可以为 null。
+    IndexTaskRetryResponse:
+      type: object
+      description: 失败索引任务重新入队成功后的响应。
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 已被重新入队的索引同步任务主键 ID。
+          example: 1001
+        status:
+          type: string
+          enum: [pending]
+          description: 重新入队后的任务状态，当前成功响应固定为 pending，表示等待工作线程处理。
+          example: pending
+    ProblemDetail:
+      type: object
+      description: Spring 标准问题详情错误响应；具体 HTTP 状态由调用的接口和失败原因决定。
+      properties:
+        type:
+          type: string
+          format: uri
+          description: 错误类型 URI。业务异常处理器当前使用 urn:vibelex:error:400 或 urn:vibelex:error:413；未处理异常可能使用 Spring 默认类型。
+          example: urn:vibelex:error:400
+        title:
+          type: string
+          description: HTTP 状态对应的简短错误标题，例如 Bad Request 或 Payload Too Large。
+          example: Bad Request
+        status:
+          type: integer
+          description: 与 HTTP 响应状态一致的数字状态码；当前文档化业务错误主要为 400=请求错误和 413=请求体文本过长。
+          example: 400
+        detail:
+          type: string
+          description: 面向调用方的具体错误原因，例如字段校验失败、V2 未启用或仅失败任务可重新入队。
+          example: V2 recognition engine is disabled
+        instance:
+          type: string
+          format: uri
+          description: 发生错误的请求实例 URI，通常是本次调用的接口路径；是否返回由 Spring 的错误响应配置决定。
+          example: /api/v2/recognitions

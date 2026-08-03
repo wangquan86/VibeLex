@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.vibelex.actorcontext.CurrentActorProvider;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.crawling.CrawlConnector.CrawledEntry;
+import com.vibelex.crawling.CrawlConnector.OriginReference;
 import com.vibelex.llm.AiVariantGenerator;
 import com.vibelex.reviewworkflow.application.ChangeSetService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
@@ -93,6 +94,39 @@ class CandidateServiceTest {
   }
 
   @Test
+  void clearsAiOriginReferencesWhenAnEditorChangesTheOrigin() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("破防", "zh-CN")).thenReturn("破防");
+    when(database.optionalOne(anyString(), any(Object[].class)))
+        .thenReturn(
+            Map.of(
+                "id",
+                1L,
+                "status",
+                "editing",
+                "processing_note",
+                "{\"origin\":\"AI 起源\",\"origin_references\":[{\"title\":\"来源\",\"url\":\"https://example.com/article\"}]}"));
+    when(database.update(anyString(), any(Object[].class))).thenReturn(1);
+    service =
+        new CandidateService(
+            database,
+            mapper,
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    service.update(1L, "破防", "情绪受到触动", "other", "人工改写的起源", List.of(), false, false, null);
+
+    ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
+    verify(database).update(anyString(), arguments.capture());
+    JsonNode note = mapper.readTree(String.valueOf(arguments.getValue()[5]));
+    assertThat(note.path("origin").asText()).isEqualTo("人工改写的起源");
+    assertThat(note.has("origin_references")).isFalse();
+  }
+
+  @Test
   void requiresCommentWhenReturningCandidate() {
     assertThatThrownBy(() -> service.returnForEditing(1L, " "))
         .isInstanceOf(IllegalArgumentException.class)
@@ -154,7 +188,15 @@ class CandidateServiceTest {
                 List.of("互联网", "职场"),
                 "https://example.test/new",
                 "新词",
-                "v1"),
+                "v1",
+                "起源说明",
+                List.of(new OriginReference("起源页面", "https://example.test/origin")),
+                true,
+                List.of("来源信息不足"),
+                "search",
+                "model",
+                "popcidian-ai-enrichment-v1",
+                new java.math.BigDecimal("0.7")),
             "system");
 
     assertThat(result.status()).isEqualTo("imported");
@@ -169,6 +211,9 @@ class CandidateServiceTest {
     assertThat(note.path("source_name").asText()).isEqualTo("波普词典");
     assertThat(note.path("source_tags")).extracting(JsonNode::asText).containsExactly("互联网", "职场");
     assertThat(note.path("examples")).extracting(JsonNode::asText).containsExactly("新词的使用例句");
+    assertThat(note.path("origin").asText()).isEqualTo("起源说明");
+    assertThat(note.path("origin_references").get(0).path("url").asText())
+        .isEqualTo("https://example.test/origin");
   }
 
   @Test

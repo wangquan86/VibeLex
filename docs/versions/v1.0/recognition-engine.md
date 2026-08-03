@@ -2,7 +2,7 @@
 
 **产品版本：** V1.0  
 **文档修订：** 1.2
-**依赖：** [数据库设计](database-design.md)、[归一化规范](normalization-spec.md)
+**依赖：** [数据库设计](../../reference/database-schema.md)、[归一化规范](../../reference/normalization.md)
 
 ---
 
@@ -173,7 +173,7 @@ V1 建议：正则规则数量 < 500 时全量扫描；超过则按 category 分
 
 ### 5.3 语义召回
 
-不属于 V1 实现范围。`semantic_threshold` 曾作为数据库中的预留规则类型出现，但 V1 运行时不读取、不执行该规则，也不依赖向量服务。V2 采用 Elasticsearch kNN 与统一配置阈值实现语义候选召回，详见 [V2 识别与 ES 方案](v2-recognition-and-es-design.md)。
+不属于 V1 实现范围。`semantic_threshold` 曾作为数据库中的预留规则类型出现，但 V1 运行时不读取、不执行该规则，也不依赖向量服务。V2 采用 Elasticsearch kNN 与统一配置阈值实现语义候选召回，详见 [V2 识别与 ES 方案](../v2.0/recognition-elasticsearch.md)。
 
 ---
 

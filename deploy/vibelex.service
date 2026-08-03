@@ -1,0 +1,18 @@
+[Unit]
+Description=VibeLex Dev Server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vibelex
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=/opt/vibelex/.env
+ExecStart=/opt/jdk-17.0.8.1+1/bin/java -Xms2g -Xmx4g -jar /opt/vibelex/vibelex-3.1.0.jar --vibelex.data-directory=/opt/vibelex/data --vibelex.crawling.enabled=true --vibelex.crawling.popcidian.scheduled-enabled=false --vibelex.crawling.regengbaike.scheduled-enabled=false
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

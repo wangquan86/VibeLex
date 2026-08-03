@@ -460,3 +460,4 @@ components:
           format: uri
           description: 发生错误的请求实例 URI，通常是本次调用的接口路径；是否返回由 Spring 的错误响应配置决定。
           example: /api/v2/recognitions
+

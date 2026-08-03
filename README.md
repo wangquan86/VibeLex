@@ -5,6 +5,8 @@
 
 VibeLex 是一个用于收集、整理、审核、检索和识别网络语言表达的知识库系统。
 
+**当前版本：V3.1** · [发布说明](docs/versions/v3.1/release-notes.md) · [部署说明](docs/versions/v3.1/deployment.md) · [OpenAPI](docs/versions/v3.1/openapi.yaml)
+
 它不仅记录“一个词是什么意思”，还关注该表达在什么语境下成立、有哪些别名和变体、是否存在多重含义、当前热度如何、是否具有风险，以及如何在真实文本中准确识别。
 
 ---
@@ -136,7 +138,7 @@ VibeLex 不只进行简单关键词匹配，也支持根据上下文判断一个
 
 应被识别为英文单词字面义，而不是网络梗。
 
-规则识别流水线详见 [识别引擎 V1 规格](docs/recognition-engine-v1.md)，Elasticsearch 词法/语义混合召回详见 [V2 识别与 ES 实现说明](docs/v2-recognition-and-es-design.md)。
+规则识别流水线详见 [识别引擎 V1 规格](docs/versions/v1.0/recognition-engine.md)，Elasticsearch 词法/语义混合召回详见 [V2 识别与 ES 实现说明](docs/versions/v2.0/recognition-elasticsearch.md)。
 
 ---
 
@@ -228,7 +230,7 @@ VibeLex 通过编辑观察、用户投稿、已授权数据集、公开趋势信
 - 公开可见不等于可批量抓取或再分发，来源接入须遵守授权、服务条款、robots 规则和隐私要求；
 - 来源失效、规则变化或证据不足时，应触发复核、修订、停用或归档。
 
-详细的来源分层、接入登记、留存策略与复核规则见 [数据来源与采集治理规范](docs/data-source-governance.md)。
+详细的来源分层、接入登记、留存策略与复核规则见 [数据来源与采集治理规范](docs/reference/data-source-governance.md)。
 
 管理页面明确区分三类信息：数据导入来源（CHIME、Buzzword、人工录入）、词条起源（编辑维护的传播说明及参考链接）和 AI变体参考来源（一次联网生成返回的词条级参考链接组）。AI变体参考来源不与单条变体一一对应。
 
@@ -311,17 +313,18 @@ meme_entries
     └── meme_revisions
 
 source_import_runs
-    └── candidate_entries（文件导入候选；人工候选不关联导入运行）
-            └── meme_entries（审核批准后通过 published_meme_id 关联）
+    └── source_import_records（逐条导入状态与处理追溯）
+            └── candidate_entries（成功导入时通过 candidate_id 关联）
+                    └── meme_entries（审核批准后通过 published_meme_id 关联）
 
 entry_change_sets（保留的通用正式词条变更能力）
 ```
 
-详细表结构、枚举字典和版本回滚语义见 [数据库设计文档](docs/database-design.md)。
+详细表结构、枚举字典和版本回滚语义见 [数据库设计文档](docs/reference/database-schema.md)。
 
-词形归一化规则见 [归一化规范](docs/normalization-spec.md)。
+词形归一化规则见 [归一化规范](docs/reference/normalization.md)。
 
-识别流水线（召回、打分、消歧、冲突处理）见 [识别引擎 V1 规格](docs/recognition-engine-v1.md)。
+识别流水线（召回、打分、消歧、冲突处理）见 [识别引擎 V1 规格](docs/versions/v1.0/recognition-engine.md)。
 
 V1 包含基础规则识别 API：变体与词面召回、上下文规则打分、义项消歧、重叠冲突处理和风险策略计算。语义向量召回不属于 V1。
 
@@ -465,7 +468,44 @@ Lex   = Lexicon，词库、词典、语言知识库
 ✅ 管理页面支持按来源汇总、按来源查询爬取记录和查看复制错误
 ```
 
-### 8.4 后续规划
+波普词典和热梗百科都通过各自的 `scheduled-enabled` 控制定时同步。设为 `false` 时仍可在管理页面手动爬取，只是不再由 Cron 自动发起任务。
+
+### 8.4 V3.1 实施范围
+
+```text
+✅ 接入热梗百科 sitemap 与数字 ID 增量检查点
+✅ 抓取标题、摘要、正文、来源分类、发布时间和 canonical URL
+✅ 将 LLM 配置拆分为 provider 与 scenario，并支持普通 /chat/completions
+✅ AI 基于页面材料提取释义、来源背景和固定分类，并为有效词条整理 3 条完整例句
+✅ 服务端严格校验 JSON、分类、置信度及三条例句结构
+✅ 留存原始材料和合法 AI 输出，重试时避免重复网页或模型请求
+✅ 候选详情显示 AI 待复核标记；波普词典联网补充起源证据并在保留原始例句的前提下补足 3 条
+✅ CHIME、Buzzword 文件导入升级为任务、逐条记录和后台 Worker
+✅ 文件导入支持失败重试、运行中软停止、任务更新时间和逐条导入时间
+✅ 候选列表增加进入候选时间，爬取记录增加分页序号和爬取时间
+```
+
+热梗百科功能当前启用，但 `scheduled-enabled` 默认关闭，因此只能从管理页面手动启动，不会由 Cron 自动执行。使用前必须设置 `VIBELEX_GENERAL_LLM_API_KEY`；如需覆盖默认服务地址或模型，再设置 `VIBELEX_GENERAL_LLM_BASE_URL`、`VIBELEX_GENERAL_LLM_MODEL`。首次完整同步前应先完成设计文档中的 10 条和 50 条真实抽样验证。
+
+抽样验证使用异步管理 API，不推进正式检查点：
+
+```http
+POST /api/admin/v3/crawl-sources/regengbaike/validation
+Content-Type: application/json
+
+{"count":10}
+```
+
+响应中的 `batch_token` 可用于查询该批次：
+
+```http
+GET /api/admin/v3/crawl-sources/regengbaike/records?batchToken={batch_token}&status=all&page=1&size=100
+```
+
+确认 10 条后将 `count` 改为 `50` 再调用；稳定样本集会复用前 10 条，只排队新增样本。
+抽样期间保持 `scheduled-enabled: false`，避免定时触发正式全量同步。
+
+### 8.5 后续规划
 
 ```text
 [ ] 接入更多网站候选发现来源和趋势采集流程
@@ -486,21 +526,27 @@ Lex   = Lexicon，词库、词典、语言知识库
 
 
 
-## 9. 设计文档
+## 9. 文档
 
+历史版本文档在发布后冻结；当前事实规范放在 `docs/reference/`，新功能和行为变化记录在对应版本目录。
 
-| 文档                                                        | 说明                                             |
-| --------------------------------------------------------- | ---------------------------------------------- |
-| [database-design.md](docs/database-design.md)             | 数据库表结构、枚举字典、生命周期与版本回滚                          |
-| [normalization-spec.md](docs/normalization-spec.md)       | `normalized_term` / `normalized_variant` 归一化规范 |
-| [recognition-engine-v1.md](docs/recognition-engine-v1.md) | 识别引擎 V1：召回、打分、消歧与冲突处理                          |
-| [data-source-governance.md](docs/data-source-governance.md) | 数据来源、采集与证据治理规范 |
-| [dataset-import-v1.md](docs/dataset-import-v1.md) | V1.0 多来源数据集导入：Importer、字段映射、幂等与候选流程 |
-| [llm-variant-generation-v1.md](docs/llm-variant-generation-v1.md) | V1 AI 变体生成：按场景配置、提示词文件与发布流程 |
-| [system-architecture-v1.md](docs/system-architecture-v1.md) | 系统架构 V1：模块边界、数据流与实施路径 |
-| [v2-recognition-and-es-design.md](docs/v2-recognition-and-es-design.md) | V2 识别与 Elasticsearch 混合召回实现基线 |
-| [openapi-v2.yaml](docs/openapi-v2.yaml) | V2 识别、索引管理和同步任务 OpenAPI 契约 |
-| [v3-crawler-candidate-import-design.md](docs/v3-crawler-candidate-import-design.md) | V3 多来源网站词条爬取、检查点、重试和候选导入实现基线 |
+| 分类 | 文档 | 说明 |
+|---|---|---|
+| 当前规范 | [数据库模型](docs/reference/database-schema.md) | 当前表结构、枚举、生命周期和回滚语义 |
+| 当前规范 | [归一化规范](docs/reference/normalization.md) | `normalized_term` / `normalized_variant` 规则 |
+| 当前规范 | [数据来源治理](docs/reference/data-source-governance.md) | 来源、许可证、采集、留存和复核规则 |
+| V1.0 | [系统架构](docs/versions/v1.0/system-architecture.md) | 模块边界、数据流与实施路径 |
+| V1.0 | [数据集导入](docs/versions/v1.0/dataset-import.md) | Importer、字段映射、幂等与候选流程 |
+| V1.0 | [识别引擎](docs/versions/v1.0/recognition-engine.md) | 召回、打分、消歧与冲突处理 |
+| V1.0 | [AI 变体生成](docs/versions/v1.0/llm-variant-generation.md) | 场景配置、提示词和发布流程 |
+| V2.0 | [识别与 Elasticsearch](docs/versions/v2.0/recognition-elasticsearch.md) | 词法和语义混合召回实现基线 |
+| V2.0 | [OpenAPI](docs/versions/v2.0/openapi.yaml) | V2.0 识别与索引管理接口快照 |
+| V3.0 | [网站爬取与候选导入](docs/versions/v3.0/crawler-candidate-import.md) | Connector、检查点、重试和候选创建 |
+| V3.1 | [发布说明](docs/versions/v3.1/release-notes.md) | V3.1 变更、迁移、配置和已知边界 |
+| V3.1 | [热梗百科与 AI 提取](docs/versions/v3.1/regengbaike-ai-crawler.md) | 热梗百科抓取、AI 提取和真实性校验 |
+| V3.1 | [文件导入任务化](docs/versions/v3.1/file-import-tasks.md) | Worker、取消、重试、幂等和时间字段 |
+| V3.1 | [部署说明](docs/versions/v3.1/deployment.md) | systemd、环境变量、Flyway 和发布验证 |
+| V3.1 | [OpenAPI](docs/versions/v3.1/openapi.yaml) | 当前完整接口契约 |
 
 
 ---
@@ -530,20 +576,18 @@ CREATE DATABASE IF NOT EXISTS vibelex_db
   DEFAULT COLLATE utf8mb4_0900_ai_ci;
 ```
 
-当前开发环境的 MySQL 连接已直接写入 `src/main/resources/application.yml`：
+本地数据库与服务器数据库必须隔离。复制环境变量模板并填写本地配置：
 
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/vibelex_db
-    username: root
-    password: wjn2021$
+```powershell
+Copy-Item .env.example .env
 ```
+
+`application.yml` 会从项目根目录自动读取 `.env`。该文件保存数据库、LLM、Elasticsearch 和 embedding 服务配置，并已通过 `.gitignore` 排除；仓库只提交不含真实凭据的 `.env.example`。操作系统环境变量的优先级高于 `.env`，因此仍可由 IDE、容器或部署平台覆盖。
 
 从项目根目录直接启动：
 
 ```bash
-java -jar target/vibelex-1.0.0-SNAPSHOT.jar
+java -jar target/vibelex-3.1.0.jar
 ```
 
 使用 IDEA 直接启动 Spring Boot 时，可在 Run Configuration 中保持 `Working directory` 为 `$ProjectFileDir$`，并在 `Program arguments` 中加入：
@@ -554,6 +598,6 @@ java -jar target/vibelex-1.0.0-SNAPSHOT.jar
 
 此开发配置会直接读取前端源码；修改 HTML、CSS 或 JavaScript 后只需刷新浏览器，无需重启后端。该参数仅用于本地开发，不应加入生产启动配置。
 
-打开 `http://localhost:8080/` 使用管理页面。系统使用 `X-Actor-Id` 固定操作者标识，默认白名单为 `editor01`、`reviewer01`、`admin01`、`system`。Flyway 首次启动时依次创建核心业务表、候选审核流程和 V2 `index_sync_tasks` 索引同步任务表；迁移脚本位于 `src/main/resources/db/migration/`。
+打开 `http://localhost:8080/` 使用管理页面。系统使用 `X-Actor-Id` 固定操作者标识，默认白名单为 `editor01`、`reviewer01`、`admin01`、`system`。Flyway 首次启动时自动执行 V1 至 V11；迁移脚本位于 `src/main/resources/db/migration/`。
 
 管理页面当前支持 CHIME 与 Buzzword JSON 导入。将文件放入 `data/` 后选择对应数据源导入。

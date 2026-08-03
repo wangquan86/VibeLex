@@ -4,17 +4,23 @@ import com.vibelex.candidatediscovery.application.CandidateService;
 import com.vibelex.candidatediscovery.application.CandidateService.CrawlerImportResult;
 import com.vibelex.crawling.CrawlConnector.CrawlPointer;
 import com.vibelex.crawling.CrawlConnector.CrawledEntry;
+import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
+import com.vibelex.crawling.CrawlEntryProcessor.ProcessedEntry;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class CrawlWorker {
@@ -24,6 +30,8 @@ public class CrawlWorker {
   private final CrawlExecutionService executions;
   private final CandidateService candidates;
   private final TransactionTemplate transactions;
+  private final ObjectMapper mapper;
+  private final Map<String, CrawlEntryProcessor> processors;
   private final String workerId = "crawler-" + UUID.randomUUID();
 
   public CrawlWorker(
@@ -31,12 +39,18 @@ public class CrawlWorker {
       CrawlProperties properties,
       CrawlExecutionService executions,
       CandidateService candidates,
-      TransactionTemplate transactions) {
+      TransactionTemplate transactions,
+      ObjectMapper mapper,
+      List<CrawlEntryProcessor> processors) {
     this.database = database;
     this.properties = properties;
     this.executions = executions;
     this.candidates = candidates;
     this.transactions = transactions;
+    this.mapper = mapper;
+    this.processors =
+        processors.stream()
+            .collect(Collectors.toUnmodifiableMap(this::sourceCode, Function.identity()));
   }
 
   @Scheduled(fixedDelayString = "${vibelex.crawling.worker.fixed-delay-millis:3000}")
@@ -58,6 +72,7 @@ public class CrawlWorker {
                   SELECT r.* FROM crawl_records r
                   JOIN crawl_checkpoints c ON c.source_code=r.source_code
                   WHERE c.current_status='running'
+                    AND r.batch_token=c.active_batch_token
                     AND r.status IN ('pending', 'retry_wait')
                     AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= NOW(3))
                   ORDER BY r.id
@@ -85,7 +100,21 @@ public class CrawlWorker {
     String sourceCode = String.valueOf(record.get("source_code"));
     CrawlConnector connector = executions.connectorForWorker(sourceCode);
     try {
-      CrawledEntry entry = connector.fetch(pointer(record));
+      FetchedCrawlEntry fetched = fetched(record, connector);
+      if (!executions.isRunning(sourceCode)) {
+        resetPending(id);
+        return;
+      }
+      ProcessedEntry processed = processed(record, sourceCode, fetched);
+      if (!executions.isRunning(sourceCode)) {
+        resetPending(id);
+        return;
+      }
+      if (processed.ignoredReason() != null) {
+        markIgnored(id, sourceCode, processed.ignoredReason(), processed);
+        return;
+      }
+      CrawledEntry entry = processed.entry();
       transactions.executeWithoutResult(
           ignored -> {
             CrawlerImportResult result =
@@ -134,6 +163,74 @@ public class CrawlWorker {
     } finally {
       executions.finishIfComplete(sourceCode);
     }
+  }
+
+  private FetchedCrawlEntry fetched(Map<String, Object> record, CrawlConnector connector) {
+    Object payload = record.get("source_payload");
+    if (payload != null && !String.valueOf(payload).isBlank()) {
+      try {
+        return mapper.readValue(String.valueOf(payload), FetchedCrawlEntry.class);
+      } catch (Exception e) {
+        throw new IllegalStateException("已保存的原始材料无效", e);
+      }
+    }
+    FetchedCrawlEntry fetched = connector.fetch(pointer(record));
+    try {
+      database.update(
+          "UPDATE crawl_records SET source_payload=?, fetched_at=NOW(3) WHERE id=? AND status='processing'",
+          mapper.writeValueAsString(fetched),
+          number(record.get("id")));
+    } catch (Exception e) {
+      throw new IllegalStateException("无法保存原始材料", e);
+    }
+    return fetched;
+  }
+
+  private ProcessedEntry processed(
+      Map<String, Object> record, String sourceCode, FetchedCrawlEntry fetched) {
+    CrawlEntryProcessor processor = processors.get(sourceCode);
+    if (processor == null) throw new IllegalStateException("来源缺少内容处理器: " + sourceCode);
+    Object cached = record.get("ai_output");
+    ProcessedEntry result;
+    if (cached != null
+        && processor.processorVersion() != null
+        && processor.processorVersion().equals(record.get("processor_version"))) {
+      result = processor.restore(fetched, String.valueOf(cached), String.valueOf(record.get("ai_model")));
+    } else result = processor.process(fetched);
+    database.update(
+        "UPDATE crawl_records SET processor_version=?, ai_model=?, ai_output=?, ai_processed_at=CASE WHEN ? IS NULL THEN ai_processed_at ELSE NOW(3) END WHERE id=? AND status='processing'",
+        result.processorVersion(),
+        result.aiModel(),
+        result.aiOutput(),
+        result.aiOutput(),
+        number(record.get("id")));
+    return result;
+  }
+
+  private void markIgnored(long id, String sourceCode, String reason, ProcessedEntry processed) {
+    database.update(
+        "UPDATE crawl_records SET status='ignored', processed_at=NOW(3), lease_owner=NULL, lease_until=NULL, processor_version=?, ai_model=?, ai_output=?, ai_processed_at=NOW(3), error_type=NULL, error_message=? WHERE id=?",
+        processed.processorVersion(),
+        processed.aiModel(),
+        processed.aiOutput(),
+        reason,
+        id);
+    database.update(
+        "UPDATE crawl_checkpoints SET ignored_count=ignored_count+1 WHERE source_code=?",
+        sourceCode);
+  }
+
+  private void resetPending(long id) {
+    database.update(
+        "UPDATE crawl_records SET status='pending', lease_owner=NULL, lease_until=NULL WHERE id=? AND status='processing'",
+        id);
+  }
+
+  private String sourceCode(CrawlEntryProcessor processor) {
+    if (processor.supports(PopCidianConnector.SOURCE_CODE)) return PopCidianConnector.SOURCE_CODE;
+    if (processor.supports(RegengBaikeConnector.SOURCE_CODE))
+      return RegengBaikeConnector.SOURCE_CODE;
+    throw new IllegalStateException("无法识别内容处理器支持的来源: " + processor.getClass().getName());
   }
 
   private void fail(Map<String, Object> record, CrawlConnector connector, RuntimeException error) {
