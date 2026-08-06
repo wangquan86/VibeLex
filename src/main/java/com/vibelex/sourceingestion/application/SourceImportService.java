@@ -138,7 +138,7 @@ public class SourceImportService {
             .filter(
                 run ->
                     Set.of("running", "succeeded", "partial_success")
-                        .contains(String.valueOf(run.get("status")))
+                            .contains(String.valueOf(run.get("status")))
                         || "planning".equals(String.valueOf(run.get("status"))))
             .findFirst();
     if (reusable.isPresent()) {
@@ -307,8 +307,7 @@ public class SourceImportService {
   }
 
   public Map<String, Object> cancel(long runId) {
-    Map<String, Object> run =
-        database.one("SELECT * FROM source_import_runs WHERE id=?", runId);
+    Map<String, Object> run = database.one("SELECT * FROM source_import_runs WHERE id=?", runId);
     String status = String.valueOf(run.get("status"));
     if ("cancelled".equals(status)) return run;
     if (!"running".equals(status)) throw new IllegalStateException("只有运行中的导入任务可以停止");
@@ -322,8 +321,7 @@ public class SourceImportService {
             WHERE id=? AND status='running'
             """,
             runId);
-    Map<String, Object> result =
-        database.one("SELECT * FROM source_import_runs WHERE id=?", runId);
+    Map<String, Object> result = database.one("SELECT * FROM source_import_runs WHERE id=?", runId);
     if (changed == 0 && !"cancelled".equals(String.valueOf(result.get("status"))))
       throw new IllegalStateException("任务状态已变化，请刷新后重试");
     return result;
@@ -398,8 +396,7 @@ public class SourceImportService {
         id);
   }
 
-  private void createIgnoredRecord(
-      long runId, CandidateImporter importer, String parserError) {
+  private void createIgnoredRecord(long runId, CandidateImporter importer, String parserError) {
     int index = errorIndex(parserError);
     database.insert(
         """

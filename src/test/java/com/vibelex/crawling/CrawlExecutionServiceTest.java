@@ -177,6 +177,19 @@ class CrawlExecutionServiceTest {
         .hasMessageContaining("1 到 50");
   }
 
+  @Test
+  void listsRecentlyUpdatedCrawlRecordsFirst() {
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(0L);
+    when(database.list(anyString(), any(Object[].class))).thenReturn(List.of());
+
+    service.records("fixture", "all", 1, 20, null);
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(database).list(sql.capture(), any(Object[].class));
+    org.assertj.core.api.Assertions.assertThat(sql.getValue())
+        .contains("ORDER BY updated_at DESC, id DESC");
+  }
+
   private CrawlConnector mockConnector(String sourceCode) {
     CrawlConnector connector = mock(CrawlConnector.class);
     when(connector.sourceCode()).thenReturn(sourceCode);

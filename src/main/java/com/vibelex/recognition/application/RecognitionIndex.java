@@ -61,13 +61,11 @@ public class RecognitionIndex {
         .list(
             """
                 SELECT e.id, e.meme_code, e.canonical_term, e.language_code,
-                       e.status, p.risk_level, p.detect_enabled,
-                       p.display_enabled, p.generate_enabled,
-                       p.recommend_enabled, p.moderation_policy
+                       e.status, p.risk_level, p.display_enabled,
+                       p.moderation_policy
                 FROM meme_entries e
                 JOIN meme_safety_policies p ON p.meme_id = e.id
                 WHERE e.status IN ('published', 'archived')
-                  AND p.detect_enabled = 1
                 """)
         .forEach(
             row -> {
@@ -81,10 +79,7 @@ public class RecognitionIndex {
                       stringValue(row, "language_code"),
                       stringValue(row, "status"),
                       stringValue(row, "risk_level"),
-                      booleanValue(row, "detect_enabled"),
                       booleanValue(row, "display_enabled"),
-                      booleanValue(row, "generate_enabled"),
-                      booleanValue(row, "recommend_enabled"),
                       stringValue(row, "moderation_policy")));
             });
     return entries;
@@ -306,9 +301,22 @@ public class RecognitionIndex {
       String language,
       String status,
       String risk,
-      boolean detect,
       boolean display,
-      boolean generate,
-      boolean recommend,
-      String moderation) {}
+      String moderation) {
+    /** Compatibility constructor for tests and integrations compiled against V3.1 internals. */
+    public Entry(
+        long id,
+        String code,
+        String term,
+        String language,
+        String status,
+        String risk,
+        boolean detect,
+        boolean display,
+        boolean generate,
+        boolean recommend,
+        String moderation) {
+      this(id, code, term, language, status, risk, display, moderation);
+    }
+  }
 }

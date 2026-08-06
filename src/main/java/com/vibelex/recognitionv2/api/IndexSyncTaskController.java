@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/admin/recognition-v2/index/tasks")
+@RequestMapping({"/api/admin/search/index/tasks", "/api/admin/recognition-v2/index/tasks"})
 public class IndexSyncTaskController {
   private final IndexSyncTaskService service;
 

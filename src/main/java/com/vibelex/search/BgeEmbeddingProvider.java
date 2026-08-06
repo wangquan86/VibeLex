@@ -1,4 +1,4 @@
-package com.vibelex.recognitionv2;
+package com.vibelex.search;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -17,11 +17,11 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class BgeEmbeddingProvider implements EmbeddingProvider {
   private static final Logger log = LoggerFactory.getLogger(BgeEmbeddingProvider.class);
-  private final RecognitionV2Properties properties;
+  private final SearchProperties properties;
   private final ObjectMapper mapper;
   private final HttpClient client;
 
-  public BgeEmbeddingProvider(RecognitionV2Properties properties, ObjectMapper mapper) {
+  public BgeEmbeddingProvider(SearchProperties properties, ObjectMapper mapper) {
     this.properties = properties;
     this.mapper = mapper;
     this.client =
@@ -32,14 +32,14 @@ public class BgeEmbeddingProvider implements EmbeddingProvider {
 
   @Override
   public List<Float> embed(String text) {
-    if (!properties.getEmbedding().isEnabled()) throw new IllegalStateException("embedding 服务未启用");
+    SearchProperties.Embedding config = properties.getEmbedding();
+    if (!config.isEnabled()) throw new IllegalStateException("embedding 服务未启用");
     try {
       String body =
-          mapper.writeValueAsString(
-              Map.of("query", text, "model_name", properties.getEmbedding().getModelName()));
+          mapper.writeValueAsString(Map.of("query", text, "model_name", config.getModelName()));
       HttpRequest request =
-          HttpRequest.newBuilder(URI.create(properties.getEmbedding().getEndpoint()))
-              .timeout(Duration.ofMillis(properties.getEmbedding().getRequestTimeoutMillis()))
+          HttpRequest.newBuilder(URI.create(config.getEndpoint()))
+              .timeout(Duration.ofMillis(config.getRequestTimeoutMillis()))
               .header("Content-Type", "application/json")
               .POST(HttpRequest.BodyPublishers.ofString(body))
               .build();
@@ -52,13 +52,14 @@ public class BgeEmbeddingProvider implements EmbeddingProvider {
       List<Float> values = new ArrayList<>();
       for (JsonNode value : vector) values.add((float) value.asDouble());
       int declared = root.path("dimension").asInt(values.size());
-      if (declared != properties.getEmbedding().getVectorDimension() || values.size() != declared)
+      if (declared != config.getVectorDimension() || values.size() != declared)
         throw new IllegalStateException("embedding 向量维度错误: " + values.size());
       return List.copyOf(values);
-    } catch (Exception e) {
-      if (e instanceof IllegalStateException x) throw x;
-      log.error("调用 embedding 服务失败 endpoint={}", properties.getEmbedding().getEndpoint(), e);
-      throw new IllegalStateException("调用 embedding 服务失败: " + e.getClass().getSimpleName(), e);
+    } catch (Exception exception) {
+      if (exception instanceof IllegalStateException failure) throw failure;
+      log.error("调用 embedding 服务失败 endpoint={}", config.getEndpoint(), exception);
+      throw new IllegalStateException(
+          "调用 embedding 服务失败: " + exception.getClass().getSimpleName(), exception);
     }
   }
 }

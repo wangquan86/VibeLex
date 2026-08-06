@@ -1,5 +1,6 @@
 package com.vibelex.crawling;
 
+import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.crawling.CrawlConnector.CrawledEntry;
 import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
 import com.vibelex.crawling.CrawlConnector.OriginReference;
@@ -15,6 +16,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -28,20 +31,25 @@ public class PopCidianAiEnricher implements CrawlEntryProcessor {
   static final String PROCESSOR_VERSION = "popcidian-ai-enrichment-v1";
   private static final Set<String> FIELDS =
       Set.of("origin", "origin_references", "examples", "confidence", "needs_review", "issues");
+  private static final Pattern TERM_SEPARATOR = Pattern.compile("[、/,，;；|]+");
+  private static final Pattern PARENTHETICAL = Pattern.compile("[（(]([^）)]+)[）)]");
   private final LlmScenarioProperties properties;
   private final PromptTemplateLoader prompts;
   private final ResponsesWebSearchLlmClient client;
   private final ObjectMapper mapper;
+  private final TermNormalizer normalizer;
 
   public PopCidianAiEnricher(
       LlmScenarioProperties properties,
       PromptTemplateLoader prompts,
       ResponsesWebSearchLlmClient client,
-      ObjectMapper mapper) {
+      ObjectMapper mapper,
+      TermNormalizer normalizer) {
     this.properties = properties;
     this.prompts = prompts;
     this.client = client;
     this.mapper = mapper;
+    this.normalizer = normalizer;
   }
 
   @Override
@@ -119,16 +127,10 @@ public class PopCidianAiEnricher implements CrawlEntryProcessor {
     validateFields(root);
     List<String> sourceExamples = sourceExamples(source.sourceExamples());
     int missing = Math.max(0, 3 - sourceExamples.size());
-    if (root.path("examples").size() != missing)
-      throw new IllegalArgumentException("波普词典 AI 必须补充恰好 " + missing + " 条例句");
-    List<String> generated = strings(root.path("examples"), missing, 80);
-    if (generated.size() != missing)
-      throw new IllegalArgumentException("波普词典 AI 补充例句存在空值或重复");
-    if (generated.stream().anyMatch(example -> !example.contains(source.term())))
-      throw new IllegalArgumentException("波普词典 AI 补充例句必须使用当前词条");
+    GeneratedExamples generated =
+        generatedExamples(source, sourceExamples, root.path("examples"), missing);
     LinkedHashSet<String> merged = new LinkedHashSet<>(sourceExamples);
-    merged.addAll(generated);
-    if (merged.size() < 3) throw new IllegalArgumentException("波普词典例句合并后不得少于 3 条");
+    merged.addAll(generated.values());
 
     String origin = root.path("origin").asText().trim();
     if (origin.length() > 2000) throw new IllegalArgumentException("origin 超过 2000 个字符");
@@ -140,11 +142,13 @@ public class PopCidianAiEnricher implements CrawlEntryProcessor {
 
     LlmScenarioProperties.Scenario scenario = properties.scenario(SCENARIO);
     BigDecimal confidence = number(root.path("confidence"));
+    List<String> issues = strings(root.path("issues"), 50, 200);
+    if (generated.incomplete() && !issues.contains("AI补充例句不完整")) issues.add("AI补充例句不完整");
     boolean needsReview =
         root.path("needs_review").asBoolean()
             || origin.isBlank()
+            || generated.incomplete()
             || confidence.compareTo(scenario.getMinimumConfidence()) < 0;
-    List<String> issues = strings(root.path("issues"), 50, 200);
     CrawledEntry entry =
         new CrawledEntry(
             source.term(),
@@ -192,6 +196,56 @@ public class PopCidianAiEnricher implements CrawlEntryProcessor {
         if (result.size() == 20) break;
       }
     return List.copyOf(result);
+  }
+
+  private GeneratedExamples generatedExamples(
+      FetchedCrawlEntry source, List<String> originals, JsonNode values, int expected) {
+    LinkedHashSet<String> seen = new LinkedHashSet<>();
+    originals.forEach(value -> seen.add(normalized(value)));
+    Set<String> termForms = acceptableTermForms(source.term());
+    List<String> accepted = new ArrayList<>();
+    boolean incomplete = values.size() != expected;
+    for (JsonNode value : values) {
+      if (!value.isTextual()) {
+        incomplete = true;
+        continue;
+      }
+      String example = value.asText().trim();
+      if (example.isBlank() || example.length() > 80) {
+        incomplete = true;
+        continue;
+      }
+      String normalizedExample = normalized(example);
+      if (!seen.add(normalizedExample)
+          || termForms.stream().noneMatch(normalizedExample::contains)) {
+        incomplete = true;
+        continue;
+      }
+      if (accepted.size() < expected) accepted.add(example);
+      else incomplete = true;
+    }
+    if (accepted.size() != expected) incomplete = true;
+    return new GeneratedExamples(List.copyOf(accepted), incomplete);
+  }
+
+  private Set<String> acceptableTermForms(String term) {
+    LinkedHashSet<String> forms = new LinkedHashSet<>();
+    addTermPieces(forms, term);
+    Matcher matcher = PARENTHETICAL.matcher(term);
+    while (matcher.find()) addTermPieces(forms, matcher.group(1));
+    addTermPieces(forms, matcher.replaceAll(""));
+    return Set.copyOf(forms);
+  }
+
+  private void addTermPieces(Set<String> forms, String value) {
+    if (value == null || value.isBlank()) return;
+    for (String piece : TERM_SEPARATOR.split(value)) {
+      if (!piece.isBlank()) forms.add(normalized(piece));
+    }
+  }
+
+  private String normalized(String value) {
+    return normalizer.normalize(value, "zh-CN");
   }
 
   private JsonNode parseObject(String output) {
@@ -321,12 +375,16 @@ public class PopCidianAiEnricher implements CrawlEntryProcessor {
       String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
       String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
       int port = uri.getPort();
-      boolean defaultPort = ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
-      String authority = uri.getHost().toLowerCase(Locale.ROOT) + (port < 0 || defaultPort ? "" : ":" + port);
+      boolean defaultPort =
+          ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
+      String authority =
+          uri.getHost().toLowerCase(Locale.ROOT) + (port < 0 || defaultPort ? "" : ":" + port);
       String query = uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery();
       return scheme + "://" + authority + path + query;
     } catch (URISyntaxException e) {
       return value;
     }
   }
+
+  private record GeneratedExamples(List<String> values, boolean incomplete) {}
 }

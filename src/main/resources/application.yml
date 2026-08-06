@@ -1,6 +1,11 @@
 spring:
   application:
     name: vibelex
+  task:
+    scheduling:
+      pool:
+        size: ${VIBELEX_SCHEDULING_POOL_SIZE:5}
+      thread-name-prefix: vibelex-scheduler-
   config:
     import: "optional:file:.env[.properties]"
   datasource:
@@ -22,7 +27,7 @@ vibelex:
   crawling:
     enabled: true
     worker:
-      fixed-delay-millis: 3000
+      fixed-delay-millis: 500
       lease-seconds: ${VIBELEX_CRAWLING_WORKER_LEASE_SECONDS:240}
       actor-id: system
     popcidian:
@@ -48,7 +53,7 @@ vibelex:
   import:
     max-file-bytes: 52428800
     worker:
-      fixed-delay-millis: 3000
+      fixed-delay-millis: 500
       lease-seconds: ${VIBELEX_IMPORT_WORKER_LEASE_SECONDS:240}
       maximum-attempts: 3
       actor-id: system
@@ -118,23 +123,46 @@ vibelex:
       sentence-max-characters: 480
       fallback-to-v1-on-search-failure: true
       fallback-to-v1-on-embedding-failure: true
-      elasticsearch:
-        enabled: ${VIBELEX_ES_ENABLED:true}
-        uris: ${VIBELEX_ES_URIS}
-        index-name: ${VIBELEX_ES_INDEX_NAME:vibelex_sense_v2}
-        index-alias: ${VIBELEX_ES_INDEX_ALIAS:vibelex_sense_current}
-        connect-timeout-millis: 1000
-        request-timeout-millis: 3000
-        lexical-top-k: 20
-        semantic-top-k: 20
-        minimum-semantic-score: 0.65
-      embedding:
-        enabled: ${VIBELEX_EMBEDDING_ENABLED:true}
-        endpoint: ${VIBELEX_EMBEDDING_ENDPOINT}
-        model-name: ${VIBELEX_EMBEDDING_MODEL_NAME:bge-large-zh}
-        vector-dimension: 1024
-        similarity: cosine
-        connect-timeout-millis: 3000
-        request-timeout-millis: 30000
-      index-worker:
-        fixed-delay-millis: 5000
+      lexical-top-k: 20
+      semantic-top-k: 20
+      minimum-semantic-score: 0.65
+  search:
+    elasticsearch:
+      enabled: ${VIBELEX_ES_ENABLED:true}
+      uris: ${VIBELEX_ES_URIS}
+      index-name: ${VIBELEX_ES_INDEX_NAME:vibelex_sense}
+      index-alias: ${VIBELEX_ES_INDEX_ALIAS:vibelex_sense_current}
+      connect-timeout-millis: 1000
+      request-timeout-millis: 3000
+    embedding:
+      enabled: ${VIBELEX_EMBEDDING_ENABLED:true}
+      endpoint: ${VIBELEX_EMBEDDING_ENDPOINT}
+      model-name: ${VIBELEX_EMBEDDING_MODEL_NAME:bge-large-zh}
+      vector-dimension: 1024
+      similarity: cosine
+      connect-timeout-millis: 3000
+      request-timeout-millis: 30000
+    index-worker:
+      fixed-delay-millis: 5000
+    rebuild-worker:
+      fixed-delay-millis: ${VIBELEX_SEARCH_REBUILD_WORKER_FIXED_DELAY_MILLIS:5000}
+  recommendation:
+    v3:
+      enabled: ${VIBELEX_RECOMMENDATION_V3_ENABLED:true}
+      max-context-characters: 480
+      default-max-results: 10
+      max-results-limit: 20
+      semantic-top-k: 50
+      lexical-top-k: 50
+      minimum-semantic-score: 0.65
+      rrf-rank-constant: 60
+      semantic-weight: 0.7
+      lexical-weight: 0.3
+      origin:
+        enabled: ${VIBELEX_RECOMMENDATION_V3_ORIGIN_ENABLED:true}
+        max-evidence-per-item: ${VIBELEX_RECOMMENDATION_V3_ORIGIN_MAX_EVIDENCE_PER_ITEM:10}
+      reranker:
+        enabled: ${VIBELEX_RERANKER_ENABLED:true}
+        endpoint: ${VIBELEX_RERANKER_ENDPOINT:http://10.145.12.11:8082}
+        connect-timeout-millis: ${VIBELEX_RERANKER_CONNECT_TIMEOUT_MILLIS:1000}
+        request-timeout-millis: ${VIBELEX_RERANKER_REQUEST_TIMEOUT_MILLIS:10000}

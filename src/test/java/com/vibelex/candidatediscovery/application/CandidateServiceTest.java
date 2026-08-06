@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -164,7 +167,8 @@ class CandidateServiceTest {
   void createsEditingCandidateWithMappedSourceMetadata() throws Exception {
     TermNormalizer normalizer = mock(TermNormalizer.class);
     when(normalizer.normalize("新词", "zh-CN")).thenReturn("新词");
-    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null);
+    when(database.optionalOne(argThat(sql -> sql.contains("UNION ALL")), any(Object[].class)))
+        .thenReturn(null);
     when(database.insert(anyString(), any(Object[].class))).thenReturn(42L);
     service =
         new CandidateService(
@@ -201,6 +205,11 @@ class CandidateServiceTest {
 
     assertThat(result.status()).isEqualTo("imported");
     assertThat(result.candidateId()).isEqualTo(42L);
+    verify(database)
+        .update(
+            argThat(sql -> sql.contains("INSERT IGNORE INTO candidate_admission_locks")),
+            any(Object[].class));
+    verify(database).optionalOne(argThat(sql -> sql.contains("FOR UPDATE")), any(Object[].class));
     ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
     verify(database).insert(anyString(), arguments.capture());
     assertThat(arguments.getValue()[6]).isEqualTo("system");
@@ -217,10 +226,53 @@ class CandidateServiceTest {
   }
 
   @Test
+  void publishesDiscoveryAndOriginEvidenceWhenTheyUseTheSameUrl() {
+    ObjectMapper mapper = new ObjectMapper();
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    ChangeSetService publishing = mock(ChangeSetService.class);
+    AiVariantGenerator variants = mock(AiVariantGenerator.class);
+    when(normalizer.normalize("尊嘟假嘟", "zh-CN")).thenReturn("尊嘟假嘟");
+    when(database.optionalOne(anyString(), any(Object[].class)))
+        .thenReturn(
+            Map.of(
+                "id", 1L,
+                "status", "pending_review",
+                "term_raw", "尊嘟假嘟",
+                "normalized_term", "尊嘟假嘟",
+                "definition_raw", "表示真的假的",
+                "source_url", "https://regengbaike.com/1.html",
+                "source_type", "crawler",
+                "source_name", "热梗百科",
+                "submitted_by", "system",
+                "processing_note",
+                    "{\"origin\":\"源于网络谐音表达\",\"origin_references\":[{\"title\":\"热梗百科：尊嘟假嘟\",\"url\":\"https://regengbaike.com/1.html\"}]}"));
+    when(publishing.publishCandidate(
+            isNull(), isNull(), any(JsonNode.class), anyString(), eq("system"), eq(false)))
+        .thenReturn(Map.of("id", 99L));
+    when(actor.currentActor()).thenReturn("reviewer");
+    service = new CandidateService(database, mapper, actor, normalizer, publishing, variants);
+
+    service.approve(1L, "同意发布");
+
+    ArgumentCaptor<JsonNode> document = ArgumentCaptor.forClass(JsonNode.class);
+    verify(publishing)
+        .publishCandidate(
+            isNull(), isNull(), document.capture(), anyString(), eq("system"), eq(false));
+    assertThat(document.getValue().path("evidence"))
+        .extracting(item -> item.path("evidence_role").asString())
+        .containsExactly("discovery", "origin");
+    assertThat(document.getValue().path("evidence"))
+        .extracting(item -> item.path("source_url").asString())
+        .containsExactly(
+            "https://regengbaike.com/1.html", "https://regengbaike.com/1.html");
+  }
+
+  @Test
   void crawlerTermMatchingPublishedEntryIsDuplicate() {
     TermNormalizer normalizer = mock(TermNormalizer.class);
     when(normalizer.normalize("旧词", "zh-CN")).thenReturn("旧词");
-    when(database.scalar(anyString(), any(Object[].class))).thenReturn(7L);
+    when(database.optionalOne(argThat(sql -> sql.contains("UNION ALL")), any(Object[].class)))
+        .thenReturn(Map.of("target_type", "meme", "target_id", 7L));
     service =
         new CandidateService(
             database,
@@ -253,10 +305,33 @@ class CandidateServiceTest {
   }
 
   @Test
+  void crawlerPrecheckUsesTheSameDuplicateRulesBeforeAiProcessing() {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("旧词", "zh-CN")).thenReturn("旧词");
+    when(database.optionalOne(argThat(sql -> sql.contains("UNION ALL")), any(Object[].class)))
+        .thenReturn(Map.of("target_type", "meme", "target_id", 7L));
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    var result = service.precheckCrawlerDuplicate("旧词");
+
+    assertThat(result.status()).isEqualTo("duplicate");
+    assertThat(result.duplicateTargetType()).isEqualTo("meme");
+    assertThat(result.duplicateTargetId()).isEqualTo(7L);
+  }
+
+  @Test
   void crawlerTermMatchingActiveVariantIsDuplicate() {
     TermNormalizer normalizer = mock(TermNormalizer.class);
     when(normalizer.normalize("别名", "zh-CN")).thenReturn("别名");
-    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null, 9L);
+    when(database.optionalOne(argThat(sql -> sql.contains("UNION ALL")), any(Object[].class)))
+        .thenReturn(Map.of("target_type", "variant", "target_id", 9L));
     service =
         new CandidateService(
             database,
@@ -292,7 +367,8 @@ class CandidateServiceTest {
   void crawlerTermMatchingCandidateIsDuplicateRegardlessOfCandidateStatus() {
     TermNormalizer normalizer = mock(TermNormalizer.class);
     when(normalizer.normalize("候选词", "zh-CN")).thenReturn("候选词");
-    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null, null, 11L);
+    when(database.optionalOne(argThat(sql -> sql.contains("UNION ALL")), any(Object[].class)))
+        .thenReturn(Map.of("target_type", "candidate", "target_id", 11L));
     service =
         new CandidateService(
             database,

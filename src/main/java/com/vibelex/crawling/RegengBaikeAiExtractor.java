@@ -2,6 +2,7 @@ package com.vibelex.crawling;
 
 import com.vibelex.crawling.CrawlConnector.CrawledEntry;
 import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
+import com.vibelex.crawling.CrawlConnector.OriginReference;
 import com.vibelex.llm.LlmClientRegistry;
 import com.vibelex.llm.LlmRequest;
 import com.vibelex.llm.LlmScenarioProperties;
@@ -20,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
 public class RegengBaikeAiExtractor implements CrawlEntryProcessor {
   private static final Logger log = LoggerFactory.getLogger(RegengBaikeAiExtractor.class);
   public static final String SCENARIO = "regengbaike-extraction";
-  public static final String PROCESSOR_VERSION = "regengbaike-ai-extraction-v2";
+  public static final String PROCESSOR_VERSION = "regengbaike-ai-extraction-v3";
   private static final Set<String> FIELDS =
       Set.of(
           "is_valid_meme",
@@ -154,7 +155,7 @@ public class RegengBaikeAiExtractor implements CrawlEntryProcessor {
             source.sourceRecordKey(),
             source.parserVersion(),
             extraction.origin(),
-            List.of(),
+            originReferences(source, extraction.origin()),
             extraction.needsReview()
                 || extraction
                         .confidence()
@@ -166,6 +167,14 @@ public class RegengBaikeAiExtractor implements CrawlEntryProcessor {
             PROCESSOR_VERSION,
             extraction.confidence());
     return ProcessedEntry.imported(entry, PROCESSOR_VERSION, model, output);
+  }
+
+  private List<OriginReference> originReferences(FetchedCrawlEntry source, String origin) {
+    if (origin == null
+        || origin.isBlank()
+        || source.sourceUrl() == null
+        || source.sourceUrl().isBlank()) return List.of();
+    return List.of(new OriginReference("热梗百科：" + source.term(), source.sourceUrl()));
   }
 
   Extraction parse(String output, FetchedCrawlEntry source) {

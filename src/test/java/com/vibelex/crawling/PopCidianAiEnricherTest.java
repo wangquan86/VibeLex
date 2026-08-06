@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
 import com.vibelex.llm.LlmScenarioProperties;
 import com.vibelex.llm.PromptTemplateLoader;
@@ -43,7 +44,7 @@ class PopCidianAiEnricherTest {
     scenario.setMinimumConfidence(new BigDecimal("0.6"));
     properties.setScenarios(Map.of("popcidian-enrichment", scenario));
     when(prompts.load("classpath:popcidian-prompt.md")).thenReturn("system rules");
-    enricher = new PopCidianAiEnricher(properties, prompts, client, mapper);
+    enricher = new PopCidianAiEnricher(properties, prompts, client, mapper, new TermNormalizer());
   }
 
   @Test
@@ -60,8 +61,7 @@ class PopCidianAiEnricherTest {
 
     CrawlEntryProcessor.ProcessedEntry result = enricher.process(source);
 
-    assertThat(result.entry().examples())
-        .containsExactly("波普原句一", "波普原句二", "看到这个结果，大家都说测试梗太贴切了。");
+    assertThat(result.entry().examples()).containsExactly("波普原句一", "波普原句二", "看到这个结果，大家都说测试梗太贴切了。");
     assertThat(result.entry().definition()).isEqualTo("测试释义");
     assertThat(result.entry().origin()).isEqualTo("经核验的起源。");
     assertThat(result.entry().originReferences()).hasSize(1);
@@ -100,6 +100,60 @@ class PopCidianAiEnricherTest {
   }
 
   @Test
+  void acceptsAnyNormalizedFormFromACompoundTerm() {
+    String output =
+        """
+        {"origin":"","origin_references":[],"examples":["这下是真的妹得办法了。","问了一圈还是妹有结果。"],"confidence":0.7,"needs_review":false,"issues":[]}
+        """;
+    when(client.completeWebSearch(any(), anyInt()))
+        .thenReturn(new ResponsesWebSearchLlmClient.ResponsesResult(output, searchResponse()));
+    FetchedCrawlEntry source = source("妹得、妹有", List.of("原来妹得是这个意思。"));
+
+    CrawlEntryProcessor.ProcessedEntry result = enricher.process(source);
+
+    assertThat(result.entry().examples())
+        .containsExactly("原来妹得是这个意思。", "这下是真的妹得办法了。", "问了一圈还是妹有结果。");
+    assertThat(result.entry().issues()).doesNotContain("AI补充例句不完整");
+  }
+
+  @Test
+  void normalizesTraditionalCharactersAndLetterCaseWhenCheckingExamples() {
+    String output =
+        """
+        {"origin":"","origin_references":[],"examples":["大家都劝他多喝热水。","最近他又开始玩GTA了。"],"confidence":0.7,"needs_review":false,"issues":[]}
+        """;
+    when(client.completeWebSearch(any(), anyInt()))
+        .thenReturn(new ResponsesWebSearchLlmClient.ResponsesResult(output, searchResponse()));
+    FetchedCrawlEntry source = source("多喝熱水、gta", List.of("多喝熱水只是随口一说。"));
+
+    CrawlEntryProcessor.ProcessedEntry result = enricher.process(source);
+
+    assertThat(result.entry().examples()).hasSize(3);
+    assertThat(result.entry().issues()).doesNotContain("AI补充例句不完整");
+  }
+
+  @Test
+  void keepsVerifiedOriginWhenGeneratedExamplesAreNotUsable() {
+    String output =
+        """
+        {"origin":"经核验的起源。","origin_references":[{"title":"起源页面","url":"https://example.com/origin"}],"examples":["这款游戏虽然一直折磨我，但我还是舍不得放下。","这个软件问题很多，我依然每天使用。","这支队伍总让人失望，粉丝还是继续支持。"],"confidence":0.8,"needs_review":false,"issues":[]}
+        """;
+    when(client.completeWebSearch(any(), anyInt()))
+        .thenReturn(
+            new ResponsesWebSearchLlmClient.ResponsesResult(
+                output, searchResponse("https://example.com/origin")));
+    FetchedCrawlEntry source = source("xx虐我千百遍，我待xx如初恋", List.of());
+
+    CrawlEntryProcessor.ProcessedEntry result = enricher.process(source);
+
+    assertThat(result.entry().origin()).isEqualTo("经核验的起源。");
+    assertThat(result.entry().originReferences()).hasSize(1);
+    assertThat(result.entry().examples()).isEmpty();
+    assertThat(result.entry().needsReview()).isTrue();
+    assertThat(result.entry().issues()).contains("AI补充例句不完整");
+  }
+
+  @Test
   void rejectsAiValidityJudgements() {
     String output =
         """
@@ -114,15 +168,19 @@ class PopCidianAiEnricherTest {
   }
 
   private FetchedCrawlEntry source(List<String> examples) {
+    return source("测试梗", examples);
+  }
+
+  private FetchedCrawlEntry source(String term, List<String> examples) {
     return new FetchedCrawlEntry(
-        "测试梗",
+        term,
         "测试释义",
         "",
         examples,
         "网络流行语",
         List.of("互联网"),
         "https://www.popcidian.com/entry/test",
-        "测试梗",
+        term,
         Instant.EPOCH,
         "popcidian-api-v1");
   }

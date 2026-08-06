@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vibelex.candidatediscovery.domain.NormalizationProfile;
 import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.recognition.application.RecognitionService;
+import com.vibelex.search.ElasticsearchGateway;
+import com.vibelex.search.EmbeddingProvider;
 import jakarta.validation.constraints.NotBlank;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -71,7 +73,8 @@ public class RecognitionV2Service {
     if (es.enabled()) {
       try {
         List<String> queryUnits = lexicalQueries(request);
-        List<ElasticsearchGateway.Hit> hits = es.lexical(queryUnits);
+        List<ElasticsearchGateway.Hit> hits =
+            es.lexicalForRecognition(queryUnits, properties.getLexicalTopK());
         lexicalCount = hits.size();
         for (ElasticsearchGateway.Hit hit : hits) {
           addAnchoredCandidate(request, hit, "lexical", candidateSources);
@@ -94,8 +97,9 @@ public class RecognitionV2Service {
       if (semanticEnabled(request)) {
         try {
           for (String fragment : fragments(request.text())) {
-            for (ElasticsearchGateway.Hit hit : es.knn(embedding.embed(fragment))) {
-              if (hit.score() >= properties.getElasticsearch().getMinimumSemanticScore()) {
+            for (ElasticsearchGateway.Hit hit :
+                es.knnForRecognition(embedding.embed(fragment), properties.getSemanticTopK())) {
+              if (hit.score() >= properties.getMinimumSemanticScore()) {
                 semanticCount++;
                 addAnchoredCandidate(request, hit, "semantic", candidateSources);
               }
@@ -124,7 +128,7 @@ public class RecognitionV2Service {
     out.put("request_id", requestId);
     out.put("matches", matches);
     out.put("engine_version", "2.0");
-    out.put("index_version", properties.getElasticsearch().getIndexAlias());
+    out.put("index_version", es.indexAlias());
     out.put("degraded", degraded);
     out.put("processed_at", Instant.now().toString());
     log.info(
@@ -140,7 +144,6 @@ public class RecognitionV2Service {
 
   private boolean semanticEnabled(Request request) {
     return properties.isSemanticRecallEnabled()
-        && properties.getEmbedding().isEnabled()
         && (request.options() == null
             || !Boolean.FALSE.equals(request.options().enableSemanticRecall()));
   }

@@ -171,31 +171,9 @@ public class CandidateService {
     }
     validateCandidate(entry.term(), entry.definition());
     String normalized = normalizer.normalize(entry.term(), "zh-CN");
-
-    Long memeId =
-        numberAsLong(
-            database.scalar(
-                "SELECT id FROM meme_entries WHERE normalized_term = ? LIMIT 1", normalized));
-    if (memeId != null) {
-      return new CrawlerImportResult("duplicate", null, "meme", memeId, normalized);
-    }
-
-    Long variantMemeId =
-        numberAsLong(
-            database.scalar(
-                "SELECT meme_id FROM meme_variants WHERE normalized_variant = ? AND status = 'active' LIMIT 1",
-                normalized));
-    if (variantMemeId != null) {
-      return new CrawlerImportResult("duplicate", null, "variant", variantMemeId, normalized);
-    }
-
-    Long candidateId =
-        numberAsLong(
-            database.scalar(
-                "SELECT id FROM candidate_entries WHERE normalized_term = ? LIMIT 1", normalized));
-    if (candidateId != null) {
-      return new CrawlerImportResult("duplicate", null, "candidate", candidateId, normalized);
-    }
+    lockCandidateAdmission(normalized);
+    CrawlerImportResult duplicate = findCrawlerDuplicate(normalized);
+    if (duplicate != null) return duplicate;
 
     ObjectNode note = mapper.createObjectNode();
     note.put("source_code", sourceCode);
@@ -257,6 +235,53 @@ public class CandidateService {
             createdBy.trim(),
             toJson(note));
     return new CrawlerImportResult("imported", createdId, null, null, normalized);
+  }
+
+  /** Performs the crawler's inexpensive term-level admission check before any AI processing. */
+  public CrawlerImportResult precheckCrawlerDuplicate(String term) {
+    if (term == null || term.isBlank()) throw new IllegalArgumentException("候选词形不能为空");
+    return findCrawlerDuplicate(normalizer.normalize(term, "zh-CN"));
+  }
+
+  private CrawlerImportResult findCrawlerDuplicate(String normalized) {
+    Map<String, Object> duplicate =
+        database.optionalOne(
+            """
+            SELECT target_type, target_id
+            FROM (
+                SELECT 'meme' AS target_type, id AS target_id, 1 AS match_priority
+                FROM meme_entries
+                WHERE normalized_term = ?
+                UNION ALL
+                SELECT 'variant' AS target_type, meme_id AS target_id, 2 AS match_priority
+                FROM meme_variants
+                WHERE normalized_variant = ? AND status = 'active'
+                UNION ALL
+                SELECT 'candidate' AS target_type, id AS target_id, 3 AS match_priority
+                FROM candidate_entries
+                WHERE normalized_term = ?
+            ) duplicate_matches
+            ORDER BY match_priority
+            LIMIT 1
+            """,
+            normalized,
+            normalized,
+            normalized);
+    if (duplicate == null) return null;
+    return new CrawlerImportResult(
+        "duplicate",
+        null,
+        String.valueOf(duplicate.get("target_type")),
+        numberAsLong(duplicate.get("target_id")),
+        normalized);
+  }
+
+  private void lockCandidateAdmission(String normalized) {
+    database.update(
+        "INSERT IGNORE INTO candidate_admission_locks(normalized_term) VALUES (?)", normalized);
+    database.optionalOne(
+        "SELECT normalized_term FROM candidate_admission_locks WHERE normalized_term=? FOR UPDATE",
+        normalized);
   }
 
   public record CrawlerImportResult(
@@ -740,7 +765,7 @@ public class CandidateService {
   }
 
   private void appendVariantEvidence(ArrayNode evidence, JsonNode variant) {
-    Set<String> existingUrls = evidenceUrls(evidence);
+    Set<String> existingUrls = evidenceUrls(evidence, "variant");
     for (JsonNode item : variant.path("evidence")) {
       String url = item.path("url").asString().trim();
       if (url.isBlank() || url.length() > 2048 || !existingUrls.add(url)) continue;
@@ -752,8 +777,11 @@ public class CandidateService {
   }
 
   private void appendOriginEvidence(ArrayNode evidence, JsonNode note) {
-    Set<String> existingUrls = evidenceUrls(evidence);
-    double confidence = note.path("ai_enrichment").path("confidence").asDouble(1);
+    Set<String> existingUrls = evidenceUrls(evidence, "origin");
+    double confidence =
+        note.path("ai_enrichment")
+            .path("confidence")
+            .asDouble(note.path("ai_extraction").path("confidence").asDouble(1));
     String origin = note.path("origin").asString().trim();
     for (JsonNode item : note.path("origin_references")) {
       String url = item.path("url").asString().trim();
@@ -773,7 +801,7 @@ public class CandidateService {
 
   private void appendVariantEvidence(
       ArrayNode evidence, AiVariantGenerator.GeneratedVariant variant) {
-    Set<String> existingUrls = evidenceUrls(evidence);
+    Set<String> existingUrls = evidenceUrls(evidence, "variant");
     for (AiVariantGenerator.SearchEvidence item : variant.evidence()) {
       if (!existingUrls.add(item.url())) continue;
       appendVariantEvidenceItem(
@@ -794,9 +822,10 @@ public class CandidateService {
         .put("evidence_note", evidenceNote);
   }
 
-  private Set<String> evidenceUrls(ArrayNode evidence) {
+  private Set<String> evidenceUrls(ArrayNode evidence, String evidenceRole) {
     Set<String> urls = new java.util.HashSet<>();
     for (JsonNode item : evidence) {
+      if (!evidenceRole.equals(item.path("evidence_role").asString())) continue;
       String url = item.path("source_url").asString().trim();
       if (!url.isBlank()) urls.add(url);
     }
@@ -836,16 +865,11 @@ public class CandidateService {
   private void appendSafetyPolicy(ObjectNode snapshot, JsonNode note) {
     boolean profanity = note.path("profanity").asBoolean(false);
     boolean offense = note.path("offense").asBoolean(false);
-    boolean activeGeneration = !offense && !profanity;
-
     ObjectNode safety = snapshot.putObject("safety_policy");
     safety.put("profanity", profanity);
     safety.put("offense", offense);
     safety.put("risk_level", offense || profanity ? "medium" : "low");
-    safety.put("detect_enabled", true);
     safety.put("display_enabled", true);
-    safety.put("generate_enabled", activeGeneration);
-    safety.put("recommend_enabled", activeGeneration);
     safety.put("moderation_policy", offense || profanity ? "manual_review" : "normal");
   }
 

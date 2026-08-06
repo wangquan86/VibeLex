@@ -4,8 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.vibelex.crawling.CrawlConnector.FetchedCrawlEntry;
+import com.vibelex.crawling.CrawlConnector.OriginReference;
+import com.vibelex.llm.LlmScenarioProperties;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -16,7 +20,11 @@ class RegengBaikeAiExtractorTest {
 
   @BeforeEach
   void setUp() {
-    extractor = new RegengBaikeAiExtractor(null, null, null, new ObjectMapper());
+    LlmScenarioProperties properties = new LlmScenarioProperties();
+    LlmScenarioProperties.Scenario scenario = new LlmScenarioProperties.Scenario();
+    scenario.setMinimumConfidence(new BigDecimal("0.6"));
+    properties.setScenarios(Map.of(RegengBaikeAiExtractor.SCENARIO, scenario));
+    extractor = new RegengBaikeAiExtractor(properties, null, null, new ObjectMapper());
     source =
         new FetchedCrawlEntry(
             "尊嘟假嘟",
@@ -44,6 +52,28 @@ class RegengBaikeAiExtractorTest {
     assertThat(result.examples()).hasSize(3).allMatch(example -> example.contains("尊嘟假嘟"));
     assertThat(result.needsReview()).isFalse();
     assertThat(result.issues()).isEmpty();
+  }
+
+  @Test
+  void usesSourcePageAsOriginReferenceWhenOriginExists() {
+    String output =
+        "{\"is_valid_meme\":true,\"definition\":\"表示真的假的。\",\"origin\":\"源于网络谐音表达。\",\"examples\":[\"尊嘟假嘟，你今天升职了？\",\"这个消息尊嘟假嘟？\",\"你说周末放假，尊嘟假嘟？\"],\"category\":\"homophone\",\"confidence\":0.8,\"needs_review\":false,\"issues\":[]}";
+
+    var result = extractor.processOutput(source, output, "general-openai", "test-model");
+
+    assertThat(result.entry().originReferences())
+        .containsExactly(new OriginReference("热梗百科：尊嘟假嘟", "https://regengbaike.com/1.html"));
+    assertThat(result.processorVersion()).isEqualTo("regengbaike-ai-extraction-v3");
+  }
+
+  @Test
+  void keepsOriginReferencesEmptyWhenOriginIsEmpty() {
+    String output =
+        "{\"is_valid_meme\":true,\"definition\":\"表示真的假的。\",\"origin\":\"\",\"examples\":[\"尊嘟假嘟，你今天升职了？\",\"这个消息尊嘟假嘟？\",\"你说周末放假，尊嘟假嘟？\"],\"category\":\"homophone\",\"confidence\":0.8,\"needs_review\":false,\"issues\":[]}";
+
+    var result = extractor.processOutput(source, output, "general-openai", "test-model");
+
+    assertThat(result.entry().originReferences()).isEmpty();
   }
 
   @Test

@@ -60,10 +60,7 @@ class ChimeAiEnricherTest {
     List<String> originalExamples = List.of("原始例句一", "原始例句二", "原始例句三");
 
     ImportRecordEnricher.EnrichedRecord result =
-        enricher.enrich(
-            "测试梗",
-            "测试释义",
-            Map.of("origin", "待核验起源", "examples", originalExamples));
+        enricher.enrich("测试梗", "测试释义", Map.of("origin", "待核验起源", "examples", originalExamples));
 
     assertThat(result.processingNote().get("examples")).isEqualTo(originalExamples);
     assertThat(result.processingNote().get("origin")).isEqualTo("经核验的起源说明。");
@@ -85,10 +82,7 @@ class ChimeAiEnricherTest {
     when(client.completeWebSearch(any(), anyInt()))
         .thenReturn(new ResponsesWebSearchLlmClient.ResponsesResult(output, searchResponse()));
 
-    assertThatThrownBy(
-            () ->
-                enricher.enrich(
-                    "测试梗", "测试释义", Map.of("examples", List.of("唯一原始例句"))))
+    assertThatThrownBy(() -> enricher.enrich("测试梗", "测试释义", Map.of("examples", List.of("唯一原始例句"))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("未知字段: examples");
   }

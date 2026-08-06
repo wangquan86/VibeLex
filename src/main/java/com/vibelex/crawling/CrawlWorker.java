@@ -53,17 +53,26 @@ public class CrawlWorker {
             .collect(Collectors.toUnmodifiableMap(this::sourceCode, Function.identity()));
   }
 
-  @Scheduled(fixedDelayString = "${vibelex.crawling.worker.fixed-delay-millis:3000}")
-  public void process() {
+  @Scheduled(fixedDelayString = "${vibelex.crawling.worker.fixed-delay-millis:500}")
+  public void processPopCidian() {
+    processSource(PopCidianConnector.SOURCE_CODE);
+  }
+
+  @Scheduled(fixedDelayString = "${vibelex.crawling.worker.fixed-delay-millis:500}")
+  public void processRegengBaike() {
+    processSource(RegengBaikeConnector.SOURCE_CODE);
+  }
+
+  private void processSource(String sourceCode) {
     if (!properties.isEnabled()) return;
     recoverStaleRecords();
     executions.recoverStalePlanning();
-    Map<String, Object> record = claim();
+    Map<String, Object> record = claim(sourceCode);
     if (record == null) return;
     processRecord(record);
   }
 
-  private Map<String, Object> claim() {
+  private Map<String, Object> claim(String sourceCode) {
     return transactions.execute(
         ignored -> {
           Map<String, Object> record =
@@ -72,12 +81,14 @@ public class CrawlWorker {
                   SELECT r.* FROM crawl_records r
                   JOIN crawl_checkpoints c ON c.source_code=r.source_code
                   WHERE c.current_status='running'
+                    AND r.source_code=?
                     AND r.batch_token=c.active_batch_token
                     AND r.status IN ('pending', 'retry_wait')
                     AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= NOW(3))
                   ORDER BY r.id
                   LIMIT 1 FOR UPDATE SKIP LOCKED
-                  """);
+                  """,
+                  sourceCode);
           if (record == null) return null;
           long id = number(record.get("id"));
           int changed =
@@ -95,7 +106,7 @@ public class CrawlWorker {
         });
   }
 
-  private void processRecord(Map<String, Object> record) {
+  void processRecord(Map<String, Object> record) {
     long id = number(record.get("id"));
     String sourceCode = String.valueOf(record.get("source_code"));
     CrawlConnector connector = executions.connectorForWorker(sourceCode);
@@ -105,7 +116,28 @@ public class CrawlWorker {
         resetPending(id);
         return;
       }
-      ProcessedEntry processed = processed(record, sourceCode, fetched);
+      CrawlerImportResult duplicate = candidates.precheckCrawlerDuplicate(fetched.term());
+      if (duplicate != null) {
+        markDuplicate(id, sourceCode, duplicate);
+        return;
+      }
+      ProcessedEntry processed;
+      RuntimeException fallbackFailure = null;
+      try {
+        processed = processed(record, sourceCode, fetched);
+      } catch (AiProcessingException failure) {
+        int attempt = ((Number) record.get("attempt_count")).intValue() + 1;
+        if (!PopCidianConnector.SOURCE_CODE.equals(sourceCode)
+            || attempt < connector.maximumAttempts()) throw failure.cause();
+        log.warn(
+            "波普词典 AI 丰富化连续失败，使用来源基础内容创建候选 source={} recordId={} attempts={}",
+            sourceCode,
+            id,
+            attempt,
+            failure.cause());
+        fallbackFailure = failure.cause();
+        processed = popCidianFallback(fetched);
+      }
       if (!executions.isRunning(sourceCode)) {
         resetPending(id);
         return;
@@ -115,18 +147,25 @@ public class CrawlWorker {
         return;
       }
       CrawledEntry entry = processed.entry();
+      String fallbackSummary =
+          fallbackFailure == null ? null : "AI丰富连续3次失败，已使用来源原始内容进入候选：" + safeError(fallbackFailure);
       transactions.executeWithoutResult(
           ignored -> {
             CrawlerImportResult result =
                 candidates.createFromCrawler(
                     sourceCode, connector.sourceName(), entry, properties.getWorker().getActorId());
+            String completionErrorType =
+                fallbackSummary != null && "imported".equals(result.status())
+                    ? "AiEnrichmentFallback"
+                    : null;
+            String completionErrorMessage = completionErrorType == null ? null : fallbackSummary;
             database.update(
                 """
                 UPDATE crawl_records
                 SET status=?, normalized_term=?, candidate_id=?,
                     duplicate_target_type=?, duplicate_target_id=?,
                     processed_at=NOW(3), lease_owner=NULL, lease_until=NULL,
-                    error_type=NULL, error_message=NULL
+                    error_type=?, error_message=?
                 WHERE id=? AND status='processing'
                 """,
                 result.status(),
@@ -134,6 +173,8 @@ public class CrawlWorker {
                 result.candidateId(),
                 result.duplicateTargetType(),
                 result.duplicateTargetId(),
+                completionErrorType,
+                completionErrorMessage,
                 id);
             String counter =
                 "imported".equals(result.status()) ? "imported_count" : "duplicate_count";
@@ -192,11 +233,17 @@ public class CrawlWorker {
     if (processor == null) throw new IllegalStateException("来源缺少内容处理器: " + sourceCode);
     Object cached = record.get("ai_output");
     ProcessedEntry result;
-    if (cached != null
-        && processor.processorVersion() != null
-        && processor.processorVersion().equals(record.get("processor_version"))) {
-      result = processor.restore(fetched, String.valueOf(cached), String.valueOf(record.get("ai_model")));
-    } else result = processor.process(fetched);
+    try {
+      if (cached != null
+          && processor.processorVersion() != null
+          && processor.processorVersion().equals(record.get("processor_version"))) {
+        result =
+            processor.restore(
+                fetched, String.valueOf(cached), String.valueOf(record.get("ai_model")));
+      } else result = processor.process(fetched);
+    } catch (RuntimeException failure) {
+      throw new AiProcessingException(failure);
+    }
     database.update(
         "UPDATE crawl_records SET processor_version=?, ai_model=?, ai_output=?, ai_processed_at=CASE WHEN ? IS NULL THEN ai_processed_at ELSE NOW(3) END WHERE id=? AND status='processing'",
         result.processorVersion(),
@@ -205,6 +252,43 @@ public class CrawlWorker {
         result.aiOutput(),
         number(record.get("id")));
     return result;
+  }
+
+  private ProcessedEntry popCidianFallback(FetchedCrawlEntry source) {
+    CrawledEntry entry =
+        new CrawledEntry(
+            source.term(),
+            source.sourceSummary(),
+            source.sourceExamples(),
+            PopCidianConnector.category(source.sourceCategory()),
+            source.sourceCategory(),
+            source.sourceTags(),
+            source.sourceUrl(),
+            source.sourceRecordKey(),
+            source.parserVersion());
+    return ProcessedEntry.imported(entry, null, null, null);
+  }
+
+  private void markDuplicate(long id, String sourceCode, CrawlerImportResult result) {
+    transactions.executeWithoutResult(
+        ignored -> {
+          database.update(
+              """
+              UPDATE crawl_records
+              SET status='duplicate', normalized_term=?, candidate_id=NULL,
+                  duplicate_target_type=?, duplicate_target_id=?,
+                  processed_at=NOW(3), lease_owner=NULL, lease_until=NULL,
+                  error_type=NULL, error_message=NULL
+              WHERE id=? AND status='processing'
+              """,
+              result.normalizedTerm(),
+              result.duplicateTargetType(),
+              result.duplicateTargetId(),
+              id);
+          database.update(
+              "UPDATE crawl_checkpoints SET duplicate_count=duplicate_count+1 WHERE source_code=?",
+              sourceCode);
+        });
   }
 
   private void markIgnored(long id, String sourceCode, String reason, ProcessedEntry processed) {
@@ -284,6 +368,16 @@ public class CrawlWorker {
 
   private long number(Object value) {
     return ((Number) value).longValue();
+  }
+
+  private static final class AiProcessingException extends RuntimeException {
+    private AiProcessingException(RuntimeException cause) {
+      super(cause);
+    }
+
+    private RuntimeException cause() {
+      return (RuntimeException) getCause();
+    }
   }
 
   private String safeError(Exception exception) {

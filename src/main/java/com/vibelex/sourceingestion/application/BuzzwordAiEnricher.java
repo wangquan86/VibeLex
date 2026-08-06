@@ -84,7 +84,8 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
     if (!"responses".equals(provider.getProtocol()))
       throw new IllegalStateException(sourceCode + " AI 丰富化必须使用 responses provider");
     String prompt = prompts.load(scenario.getPrompt());
-    String input = sourceInput(term, definition, processingNote, scenario.getMaximumSourceCharacters());
+    String input =
+        sourceInput(term, definition, processingNote, scenario.getMaximumSourceCharacters());
     ResponsesWebSearchLlmClient.ResponsesResult response =
         client.completeWebSearch(
             new LlmRequest(
@@ -116,7 +117,13 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
       String provider,
       String model) {
     return buildResult(
-        term, definition, processingNote, aiOutput, provider, model, savedReferenceKeys(processingNote));
+        term,
+        definition,
+        processingNote,
+        aiOutput,
+        provider,
+        model,
+        savedReferenceKeys(processingNote));
   }
 
   private EnrichedRecord buildResult(
@@ -290,8 +297,8 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
     if (Set.of("www.baidu.com", "m.baidu.com").contains(host) && "/s".equals(path)) return true;
     if ((host.equals("bing.com") || host.endsWith(".bing.com")) && "/search".equals(path))
       return true;
-    if ((host.equals("google.com") || host.endsWith(".google.com"))
-        && "/search".equals(path)) return true;
+    if ((host.equals("google.com") || host.endsWith(".google.com")) && "/search".equals(path))
+      return true;
     if ((host.equals("sogou.com") || host.endsWith(".sogou.com")) && "/web".equals(path))
       return true;
     return (host.equals("so.com") || host.endsWith(".so.com")) && "/s".equals(path);
@@ -309,7 +316,8 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
             : String.valueOf(processingNote.get("origin")));
     ArrayNode examples = input.putArray("original_examples");
     int remaining = Math.max(1000, maximumCharacters) - input.toString().length() - 500;
-    JsonNode values = mapper.valueToTree(processingNote == null ? null : processingNote.get("examples"));
+    JsonNode values =
+        mapper.valueToTree(processingNote == null ? null : processingNote.get("examples"));
     if (values != null && values.isArray()) {
       for (JsonNode value : values) {
         if (!value.isTextual() || remaining <= 0) continue;
@@ -352,7 +360,8 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
 
   private Set<String> savedReferenceKeys(Map<String, Object> processingNote) {
     LinkedHashSet<String> result = new LinkedHashSet<>();
-    JsonNode refs = mapper.valueToTree(processingNote == null ? null : processingNote.get("origin_references"));
+    JsonNode refs =
+        mapper.valueToTree(processingNote == null ? null : processingNote.get("origin_references"));
     if (refs != null && refs.isArray())
       for (JsonNode ref : refs) addCitationKey(ref.path("url").asText(), result);
     return Set.copyOf(result);
@@ -364,8 +373,10 @@ public class BuzzwordAiEnricher implements ImportRecordEnricher {
       String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
       String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
       int port = uri.getPort();
-      boolean defaultPort = ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
-      String authority = uri.getHost().toLowerCase(Locale.ROOT) + (port < 0 || defaultPort ? "" : ":" + port);
+      boolean defaultPort =
+          ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
+      String authority =
+          uri.getHost().toLowerCase(Locale.ROOT) + (port < 0 || defaultPort ? "" : ":" + port);
       String query = uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery();
       return scheme + "://" + authority + path + query;
     } catch (URISyntaxException e) {

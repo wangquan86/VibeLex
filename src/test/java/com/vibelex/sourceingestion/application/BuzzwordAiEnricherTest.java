@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.vibelex.llm.LlmRequest;
 import com.vibelex.llm.LlmScenarioProperties;
 import com.vibelex.llm.PromptTemplateLoader;
 import com.vibelex.llm.ResponsesWebSearchLlmClient;
@@ -17,7 +18,6 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import com.vibelex.llm.LlmRequest;
 import tools.jackson.databind.ObjectMapper;
 
 class BuzzwordAiEnricherTest {
@@ -43,8 +43,7 @@ class BuzzwordAiEnricherTest {
     scenario.setWebSearchMaxKeyword(2);
     scenario.setMinimumConfidence(new BigDecimal("0.6"));
     properties.setScenarios(Map.of("buzzword-enrichment", scenario));
-    when(prompts.load("classpath:test-prompt.md"))
-        .thenReturn("system rules");
+    when(prompts.load("classpath:test-prompt.md")).thenReturn("system rules");
     enricher = new BuzzwordAiEnricher(properties, prompts, client, mapper);
   }
 
@@ -79,12 +78,9 @@ class BuzzwordAiEnricherTest {
         {"origin":"","origin_references":[],"examples":["我很难过。","大家都很感动。","这条消息很意外。"],"confidence":0.7,"needs_review":true,"issues":["来源信息不足"]}
         """;
     when(client.completeWebSearch(any(), anyInt()))
-        .thenReturn(
-            new ResponsesWebSearchLlmClient.ResponsesResult(
-                output, searchResponse()));
+        .thenReturn(new ResponsesWebSearchLlmClient.ResponsesResult(output, searchResponse()));
 
-    assertThatThrownBy(
-            () -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
+    assertThatThrownBy(() -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("必须使用当前词条");
   }
@@ -105,8 +101,7 @@ class BuzzwordAiEnricherTest {
                     "https://example.com/3",
                     "https://example.com/4")));
 
-    assertThatThrownBy(
-            () -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
+    assertThatThrownBy(() -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("最多只能包含 3 条");
   }
@@ -122,8 +117,7 @@ class BuzzwordAiEnricherTest {
             new ResponsesWebSearchLlmClient.ResponsesResult(
                 output, searchResponse("https://example.com/real-article")));
 
-    assertThatThrownBy(
-            () -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
+    assertThatThrownBy(() -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("不在本次 web_search 引用结果中");
   }
@@ -139,8 +133,7 @@ class BuzzwordAiEnricherTest {
             new ResponsesWebSearchLlmClient.ResponsesResult(
                 output, searchResponse("https://example.com/article?section=origin")));
 
-    assertThatThrownBy(
-            () -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
+    assertThatThrownBy(() -> enricher.enrich("破防", "情绪受到强烈触动", Map.of("examples", List.of())))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("不在本次 web_search 引用结果中");
   }
@@ -166,7 +159,8 @@ class BuzzwordAiEnricherTest {
   private tools.jackson.databind.JsonNode searchResponse(String... urls) throws Exception {
     var root = mapper.createObjectNode();
     root.putObject("usage").putObject("tool_usage").put("web_search", 1);
-    var annotations = root.putArray("output").addObject().putArray("content").addObject().putArray("annotations");
+    var annotations =
+        root.putArray("output").addObject().putArray("content").addObject().putArray("annotations");
     for (String url : urls) annotations.addObject().put("type", "url_citation").put("url", url);
     return root;
   }

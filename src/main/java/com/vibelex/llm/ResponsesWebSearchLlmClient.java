@@ -8,12 +8,19 @@ import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class ResponsesWebSearchLlmClient implements LlmClient {
+  private static final Pattern BEARER_TOKEN =
+      Pattern.compile("(?i)bearer\\s+[a-z0-9._~+/-]+={0,2}");
+  private static final Pattern SECRET_FIELD =
+      Pattern.compile(
+          "(?i)(api[_-]?key|access[_-]?token|authorization)\\s*[:=]\\s*[\\\"']?[^\\s,;；\\\"'}]+");
   private final ObjectMapper mapper;
   private final LlmScenarioProperties properties;
   private final HttpClient client =
@@ -63,8 +70,13 @@ public class ResponsesWebSearchLlmClient implements LlmClient {
               .build();
       HttpResponse<String> response =
           client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-      if (response.statusCode() / 100 != 2)
-        throw new IllegalStateException("Responses API 返回 HTTP " + response.statusCode());
+      if (response.statusCode() / 100 != 2) {
+        String summary = responseErrorSummary(response);
+        throw new IllegalStateException(
+            "Responses API 返回 HTTP "
+                + response.statusCode()
+                + (summary.isBlank() ? "" : "：" + summary));
+      }
       JsonNode root = mapper.readTree(response.body());
       String text = root.path("output_text").asText("").trim();
       if (text.isBlank()) {
@@ -102,6 +114,48 @@ public class ResponsesWebSearchLlmClient implements LlmClient {
     if (value == null || value.isBlank())
       throw new IllegalStateException("LLM provider 缺少配置: " + field);
     return value.trim();
+  }
+
+  private String responseErrorSummary(HttpResponse<String> response) {
+    StringJoiner summary = new StringJoiner("；");
+    try {
+      JsonNode root = mapper.readTree(response.body());
+      JsonNode error = root.path("error");
+      append(summary, "code", firstText(error.path("code"), root.path("code")));
+      append(summary, "type", firstText(error.path("type"), root.path("type")));
+      append(summary, "message", firstText(error.path("message"), root.path("message")));
+      append(summary, "param", firstText(error.path("param"), root.path("param")));
+    } catch (Exception ignored) {
+      // Fall through to a sanitized raw-body summary when the provider does not return JSON.
+    }
+    String requestId =
+        response
+            .headers()
+            .firstValue("x-request-id")
+            .or(() -> response.headers().firstValue("x-tt-logid"))
+            .orElse("");
+    append(summary, "request_id", requestId);
+    String value = summary.toString();
+    if (value.isBlank()) value = response.body();
+    return sanitized(value, 800);
+  }
+
+  private String firstText(JsonNode first, JsonNode second) {
+    if (first != null && first.isValueNode() && !first.asText().isBlank()) return first.asText();
+    if (second != null && second.isValueNode() && !second.asText().isBlank())
+      return second.asText();
+    return "";
+  }
+
+  private void append(StringJoiner target, String label, String value) {
+    if (value != null && !value.isBlank()) target.add(label + "=" + value.trim());
+  }
+
+  private String sanitized(String value, int maximumLength) {
+    String result = value == null ? "" : value.replaceAll("[\\p{Cntrl}\\s]+", " ").trim();
+    result = BEARER_TOKEN.matcher(result).replaceAll("Bearer ***");
+    result = SECRET_FIELD.matcher(result).replaceAll("$1=***");
+    return result.length() > maximumLength ? result.substring(0, maximumLength) + "…" : result;
   }
 
   public record ResponsesResult(String text, JsonNode response) {}

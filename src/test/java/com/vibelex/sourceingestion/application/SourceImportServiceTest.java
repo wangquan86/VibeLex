@@ -30,13 +30,7 @@ class SourceImportServiceTest {
         service.importFile(
             "buzzword",
             new ImportRequest(
-                file.getFileName().toString(),
-                "v1",
-                null,
-                "approved",
-                null,
-                "reviewed",
-                "tester"));
+                file.getFileName().toString(), "v1", null, "approved", null, "reviewed", "tester"));
 
     assertThat(result.get("reused")).isEqualTo(false);
     assertThat(database.inserts.get(0).sql()).contains("status").contains("'planning'");

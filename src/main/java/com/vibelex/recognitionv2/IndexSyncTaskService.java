@@ -1,5 +1,8 @@
 package com.vibelex.recognitionv2;
 
+import com.vibelex.search.SearchIndexNotReadyException;
+import com.vibelex.search.SearchIndexRebuildService;
+import com.vibelex.search.SearchIndexService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,13 +21,18 @@ public class IndexSyncTaskService {
   private static final int BATCH_SIZE = 20;
   private static final int MAX_RETRIES = 5;
   private final MyBatisDatabase database;
-  private final SemanticIndexService index;
+  private final SearchIndexService index;
+  private final SearchIndexRebuildService rebuilds;
   private final TransactionTemplate transactions;
 
   public IndexSyncTaskService(
-      MyBatisDatabase database, SemanticIndexService index, TransactionTemplate transactions) {
+      MyBatisDatabase database,
+      SearchIndexService index,
+      SearchIndexRebuildService rebuilds,
+      TransactionTemplate transactions) {
     this.database = database;
     this.index = index;
+    this.rebuilds = rebuilds;
     this.transactions = transactions;
   }
 
@@ -43,14 +51,17 @@ public class IndexSyncTaskService {
   }
 
   public void enqueue(long memeId, String operation) {
+    if (!List.of("UPSERT", "DELETE").contains(operation))
+      throw new IllegalArgumentException("不支持的索引同步操作: " + operation);
     database.update(
         """
         INSERT INTO index_sync_tasks(meme_id, operation, status, retry_count, next_retry_at)
         VALUES (?, ?, 'pending', 0, NOW(3))
         ON DUPLICATE KEY UPDATE
           operation=VALUES(operation),
-          status=IF(status='processing', 'processing', 'pending'),
-          next_retry_at=NOW(3), last_error=NULL, finished_at=NULL
+          next_retry_at=IF(status='processing', DATE_ADD(NOW(3), INTERVAL 10 SECOND), NOW(3)),
+          status='pending', retry_count=0,
+          last_error=NULL, finished_at=NULL
         """,
         memeId,
         operation);
@@ -65,11 +76,21 @@ public class IndexSyncTaskService {
     List<Map<String, Object>> items =
         "all".equals(selected)
             ? database.list(
-                "SELECT * FROM index_sync_tasks ORDER BY id DESC LIMIT ? OFFSET ?",
+                """
+                SELECT t.*, m.normalized_term
+                FROM index_sync_tasks t
+                LEFT JOIN meme_entries m ON m.id=t.meme_id
+                ORDER BY t.id DESC LIMIT ? OFFSET ?
+                """,
                 safeSize,
                 (safePage - 1) * safeSize)
             : database.list(
-                "SELECT * FROM index_sync_tasks" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                """
+                SELECT t.*, m.normalized_term
+                FROM index_sync_tasks t
+                LEFT JOIN meme_entries m ON m.id=t.meme_id
+                WHERE t.status=? ORDER BY t.id DESC LIMIT ? OFFSET ?
+                """,
                 selected,
                 safeSize,
                 (safePage - 1) * safeSize);
@@ -96,9 +117,10 @@ public class IndexSyncTaskService {
     if (changed == 0) throw new IllegalStateException("仅失败任务可以重新入队");
   }
 
-  @Scheduled(fixedDelayString = "${vibelex.recognition.v2.index-worker.fixed-delay-millis:5000}")
+  @Scheduled(fixedDelayString = "${vibelex.search.index-worker.fixed-delay-millis:5000}")
   public void process() {
     recoverStaleTasks();
+    if (rebuilds.blocksIncrementalSync()) return;
     for (Map<String, Object> task : claimBatch()) processTask(task);
   }
 
@@ -110,7 +132,11 @@ public class IndexSyncTaskService {
                   """
                   SELECT id, meme_id, operation, retry_count
                   FROM index_sync_tasks
-                  WHERE status='pending' AND next_retry_at <= NOW(3)
+                  WHERE status='pending' AND locked_at IS NULL AND next_retry_at <= NOW(3)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM search_rebuild_jobs
+                      WHERE status IN ('preparing', 'running')
+                    )
                   ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED
                   """,
                   BATCH_SIZE);
@@ -126,7 +152,7 @@ public class IndexSyncTaskService {
         });
   }
 
-  private void processTask(Map<String, Object> task) {
+  void processTask(Map<String, Object> task) {
     long id = ((Number) task.get("id")).longValue();
     long memeId = ((Number) task.get("meme_id")).longValue();
     int retry = ((Number) task.get("retry_count")).intValue();
@@ -134,26 +160,39 @@ public class IndexSyncTaskService {
       if ("DELETE".equals(task.get("operation"))) index.deleteMeme(memeId);
       else index.syncMeme(memeId);
       database.update(
-          "UPDATE index_sync_tasks SET status='succeeded', finished_at=NOW(3), last_error=NULL WHERE id=?",
+          "UPDATE index_sync_tasks SET status='succeeded', finished_at=NOW(3), locked_at=NULL, last_error=NULL WHERE id=? AND status='processing'",
           id);
+    } catch (SearchIndexNotReadyException ex) {
+      database.update(
+          "UPDATE index_sync_tasks SET status='pending', next_retry_at=DATE_ADD(NOW(3), INTERVAL 30 SECOND), locked_at=NULL, last_error=? WHERE id=? AND status='processing'",
+          safeError(ex),
+          id);
+      log.info("共享索引尚未就绪，任务保持待处理 id={} memeId={} reason={}", id, memeId, ex.getMessage());
     } catch (RuntimeException ex) {
       int nextRetry = retry + 1;
       if (nextRetry >= MAX_RETRIES) {
         database.update(
-            "UPDATE index_sync_tasks SET status='failed', retry_count=?, last_error=? WHERE id=?",
+            "UPDATE index_sync_tasks SET status='failed', retry_count=?, finished_at=NOW(3), locked_at=NULL, last_error=? WHERE id=? AND status='processing'",
             nextRetry,
             safeError(ex),
             id);
       } else {
         int delay = Math.min(1800, 60 * (1 << Math.min(nextRetry - 1, 5)));
         database.update(
-            "UPDATE index_sync_tasks SET status='pending', retry_count=?, next_retry_at=DATE_ADD(NOW(3), INTERVAL ? SECOND), last_error=? WHERE id=?",
+            "UPDATE index_sync_tasks SET status='pending', retry_count=?, next_retry_at=DATE_ADD(NOW(3), INTERVAL ? SECOND), locked_at=NULL, last_error=? WHERE id=? AND status='processing'",
             nextRetry,
             delay,
             safeError(ex),
             id);
       }
-      log.warn("V2 索引任务失败 id={} memeId={} retry={}", id, memeId, nextRetry, ex);
+      log.warn("共享索引任务失败 id={} memeId={} retry={}", id, memeId, nextRetry, ex);
+    } finally {
+      // enqueue() keeps the previous claim lock when an update arrives during processing. The
+      // current worker releases that lock only after its ES call finishes, so the replacement
+      // task cannot overlap and the newer operation always runs last.
+      database.update(
+          "UPDATE index_sync_tasks SET locked_at=NULL WHERE id=? AND status='pending' AND locked_at IS NOT NULL",
+          id);
     }
   }
 
@@ -161,7 +200,8 @@ public class IndexSyncTaskService {
     database.update(
         """
         UPDATE index_sync_tasks SET status='pending', locked_at=NULL
-        WHERE status='processing' AND locked_at < DATE_SUB(NOW(3), INTERVAL 10 MINUTE)
+        WHERE status IN ('processing', 'pending')
+          AND locked_at < DATE_SUB(NOW(3), INTERVAL 10 MINUTE)
         """);
   }
 

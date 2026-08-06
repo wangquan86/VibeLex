@@ -50,10 +50,10 @@ public class EntryWithdrawalService {
         database.update(
             "UPDATE meme_entries SET status='archived' WHERE id=? AND status='published'", entryId);
     if (changed == 0) throw new IllegalStateException("词条状态已变化，请刷新后重试");
-    database.update(
-        "UPDATE meme_safety_policies SET detect_enabled=0, display_enabled=0, generate_enabled=0, recommend_enabled=0 WHERE meme_id=?",
-        entryId);
-    publishing.removeRecognitionIndex(entryId);
+    database.update("UPDATE meme_safety_policies SET display_enabled=0 WHERE meme_id=?", entryId);
+    // Archived entries remain in the shared index for V2 recognition; V3 filters them at query
+    // time.
+    publishing.refreshRecognitionIndex(entryId);
     return Map.of("entryId", entryId, "candidateId", candidateId, "status", "archived");
   }
 

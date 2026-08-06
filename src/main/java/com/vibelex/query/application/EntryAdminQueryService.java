@@ -93,7 +93,6 @@ public class EntryAdminQueryService {
         database.list(
             """
                 SELECT e.*, p.risk_level, p.display_enabled,
-                       p.generate_enabled, p.recommend_enabled,
                        (SELECT s.short_definition
                         FROM meme_senses s
                         WHERE s.meme_id = e.id AND s.status = 'active'

@@ -1,0 +1,31 @@
+[Unit]
+Description=VibeLex CPU Reranker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vibelex-reranker
+
+Environment=RERANKER_MODEL=/opt/vibelex-reranker/models/bge-reranker-base
+Environment=RERANKER_LOCAL_FILES_ONLY=true
+Environment=RERANKER_MAX_TEXTS=32
+Environment=RERANKER_MAX_LENGTH=512
+Environment=RERANKER_BATCH_SIZE=4
+Environment=RERANKER_THREADS=4
+Environment=OMP_NUM_THREADS=4
+Environment=MKL_NUM_THREADS=4
+Environment=TOKENIZERS_PARALLELISM=false
+
+ExecStart=/opt/vibelex-reranker/venv/bin/uvicorn app:app --host 10.145.12.11 --port 8082 --workers 1
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+MemoryLimit=8G
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,6 +1,8 @@
 package com.vibelex.shared;
 
 import com.vibelex.recognitionv2.RecognitionV2Service;
+import com.vibelex.recommendation.application.RecommendationContextTooLongException;
+import com.vibelex.recommendation.application.RecommendationUnavailableException;
 import java.net.URI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +20,17 @@ public class ApiExceptionHandler {
   @ExceptionHandler(RecognitionV2Service.TextTooLongException.class)
   ProblemDetail textTooLong(RecognitionV2Service.TextTooLongException ex) {
     return problem(HttpStatus.PAYLOAD_TOO_LARGE, "文本超过 V2 识别长度上限");
+  }
+
+  @ExceptionHandler(RecommendationContextTooLongException.class)
+  ProblemDetail recommendationContextTooLong(RecommendationContextTooLongException ex) {
+    return problem(HttpStatus.PAYLOAD_TOO_LARGE, ex.getMessage());
+  }
+
+  @ExceptionHandler(RecommendationUnavailableException.class)
+  ProblemDetail recommendationUnavailable(RecommendationUnavailableException ex) {
+    log.warn("推荐服务不可用: {}", ex.getMessage());
+    return problem(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
   }
 
   @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})

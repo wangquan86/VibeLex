@@ -345,7 +345,7 @@ public class CrawlExecutionService {
             FROM crawl_records
             """
                 + where
-                + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             args.toArray());
     List<Map<String, Object>> enriched =
         items.stream()

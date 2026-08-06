@@ -30,9 +30,7 @@ class RecognitionServiceTest {
   @Test
   void returnsEmptyExamplesWhenSenseIsAmbiguous() {
     List<Sense> ambiguousSenses =
-        List.of(
-            new Sense(201L, 1, "情绪义", null),
-            new Sense(202L, 2, "游戏义", null));
+        List.of(new Sense(201L, 1, "情绪义", null), new Sense(202L, 2, "游戏义", null));
     RecognitionService service = serviceWith(ambiguousSenses, examples());
 
     Map<String, Object> match = firstMatch(service.recognize(request()));

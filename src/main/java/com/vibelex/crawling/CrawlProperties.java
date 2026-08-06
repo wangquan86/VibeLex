@@ -44,7 +44,7 @@ public class CrawlProperties {
   }
 
   public static class Worker {
-    private long fixedDelayMillis = 3000;
+    private long fixedDelayMillis = 500;
     private int leaseSeconds = 120;
     private String actorId = "system";
 

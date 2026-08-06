@@ -371,7 +371,7 @@ CREATE TABLE meme_senses (
   COMMENT='梗词义项表：保存一个主梗的多个释义、语境、情绪和语义标签';
 ```
 
-`safety_policy_override` 允许覆盖 `risk_level`、`risk_tags`、`detect_enabled`、`display_enabled`、`generate_enabled`、`recommend_enabled` 和 `moderation_policy`。未提供的字段继续使用词条级 `meme_safety_policies`。
+`safety_policy_override` 允许覆盖 `risk_level`、`risk_tags`、`display_enabled` 和 `moderation_policy`。未提供的字段继续使用词条级 `meme_safety_policies`。
 
 ---
 
@@ -611,13 +611,7 @@ CREATE TABLE meme_safety_policies (
 
     risk_level VARCHAR(16) NOT NULL DEFAULT 'low' COMMENT '风险等级：none、low、medium、high、restricted',
 
-    detect_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否允许系统识别该梗：0=否，1=是',
-
     display_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否允许向普通用户展示该梗解释：0=否，1=是',
-
-    generate_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否允许 AI 主动生成或使用该梗：0=否，1=是',
-
-    recommend_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否允许向品牌、运营或用户推荐该梗：0=否，1=是',
 
     moderation_policy VARCHAR(32) NOT NULL DEFAULT 'normal' COMMENT '处理策略：normal、log_only、manual_review、block、restricted',
 
@@ -636,17 +630,8 @@ CREATE TABLE meme_safety_policies (
     CONSTRAINT chk_safety_offense
         CHECK (offense IN (0, 1)),
 
-    CONSTRAINT chk_safety_detect_enabled
-        CHECK (detect_enabled IN (0, 1)),
-
     CONSTRAINT chk_safety_display_enabled
         CHECK (display_enabled IN (0, 1)),
-
-    CONSTRAINT chk_safety_generate_enabled
-        CHECK (generate_enabled IN (0, 1)),
-
-    CONSTRAINT chk_safety_recommend_enabled
-        CHECK (recommend_enabled IN (0, 1)),
 
     CONSTRAINT fk_meme_safety_policies_meme
         FOREIGN KEY (meme_id)
@@ -656,14 +641,12 @@ CREATE TABLE meme_safety_policies (
 
     UNIQUE KEY uk_safety_policy_meme (meme_id),
 
-    KEY idx_safety_risk_level (risk_level),
-
-    KEY idx_safety_generate_recommend (generate_enabled, recommend_enabled)
+    KEY idx_safety_risk_level (risk_level)
 
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_0900_ai_ci
-  COMMENT='梗词风险策略表：控制梗词的识别、展示、AI生成、推荐和审核策略';
+  COMMENT='梗词风险策略表：控制梗词的展示和审核策略';
 ```
 
 ---

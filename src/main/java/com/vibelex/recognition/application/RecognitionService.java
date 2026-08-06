@@ -357,10 +357,7 @@ public class RecognitionService {
       Scored x, String text, Data data, boolean includeRecallSources) {
     Entry e = data.entries().get(x.memeId);
     Map<String, Object> p = new LinkedHashMap<>();
-    p.put("detect_enabled", e.detect());
     p.put("display_enabled", e.display());
-    p.put("generate_enabled", e.generate());
-    p.put("recommend_enabled", !e.status().equals("archived") && e.recommend());
     p.put("risk_level", e.risk());
     p.put("moderation_policy", e.moderation());
     Map<String, Object> m = new LinkedHashMap<>();

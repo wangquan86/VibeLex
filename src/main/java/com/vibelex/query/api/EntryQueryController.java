@@ -27,8 +27,7 @@ public class EntryQueryController {
     if (q == null || q.isBlank()) {
       return database.list(
           """
-                    SELECT e.*, p.risk_level, p.display_enabled,
-                           p.generate_enabled, p.recommend_enabled
+                    SELECT e.*, p.risk_level, p.display_enabled
                     FROM meme_entries e
                     JOIN meme_safety_policies p ON p.meme_id = e.id
                     WHERE e.status IN %s
@@ -41,8 +40,7 @@ public class EntryQueryController {
     String keyword = "%" + q + "%";
     return database.list(
         """
-                SELECT DISTINCT e.*, p.risk_level, p.display_enabled,
-                                p.generate_enabled, p.recommend_enabled
+                SELECT DISTINCT e.*, p.risk_level, p.display_enabled
                 FROM meme_entries e
                 JOIN meme_safety_policies p ON p.meme_id = e.id
                 LEFT JOIN meme_variants v ON v.meme_id = e.id

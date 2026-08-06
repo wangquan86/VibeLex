@@ -48,7 +48,7 @@ public class SourceImportWorker {
     this.actorId = actorId == null || actorId.isBlank() ? "system" : actorId.trim();
   }
 
-  @Scheduled(fixedDelayString = "${vibelex.import.worker.fixed-delay-millis:3000}")
+  @Scheduled(fixedDelayString = "${vibelex.import.worker.fixed-delay-millis:500}")
   public void process() {
     recoverStaleRecords();
     recoverStalePlanningRuns();
@@ -88,7 +88,7 @@ public class SourceImportWorker {
                   """,
                   workerId,
                   leaseSeconds,
-                   number(record.get("id")));
+                  number(record.get("id")));
           if (changed != 1) return null;
           database.update(
               "UPDATE source_import_runs SET updated_at=NOW(3) WHERE id=?",
@@ -97,7 +97,7 @@ public class SourceImportWorker {
         });
   }
 
-  private void processRecord(Map<String, Object> record) {
+  void processRecord(Map<String, Object> record) {
     long id = number(record.get("id"));
     long runId = number(record.get("import_run_id"));
     String sourceCode = String.valueOf(record.get("source_code"));
@@ -109,7 +109,22 @@ public class SourceImportWorker {
         return;
       }
       ImportedCandidateData source = source(record);
-      ImportRecordEnricher.EnrichedRecord enriched = enrich(record, id, sourceCode, source);
+      ImportRecordEnricher.EnrichedRecord enriched;
+      try {
+        enriched = enrich(record, id, sourceCode, source);
+      } catch (AiEnrichmentException failure) {
+        int attempt = ((Number) record.get("attempt_count")).intValue() + 1;
+        if (!"chime".equals(sourceCode) || attempt < maximumAttempts) throw failure.cause();
+        log.warn(
+            "CHIME AI 丰富化连续失败，使用来源基础内容创建候选 runId={} recordId={} attempts={}",
+            runId,
+            id,
+            attempt,
+            failure.cause());
+        enriched =
+            new ImportRecordEnricher.EnrichedRecord(
+                source.definition(), source.note(), null, null, null, null, null);
+      }
       if (enriched.ignored()) {
         markIgnored(id, runId, enriched);
         return;
@@ -132,26 +147,28 @@ public class SourceImportWorker {
   }
 
   private ImportRecordEnricher.EnrichedRecord enrich(
-      Map<String, Object> record,
-      long recordId,
-      String sourceCode,
-      ImportedCandidateData source) {
+      Map<String, Object> record, long recordId, String sourceCode, ImportedCandidateData source) {
     ImportRecordEnricher enricher = enrichers.get(sourceCode);
     if (enricher == null)
       return new ImportRecordEnricher.EnrichedRecord(
           source.definition(), source.note(), null, null, null, null, null);
     markStage(recordId, "ai_enrichment");
     Object cached = record.get("ai_output");
-    ImportRecordEnricher.EnrichedRecord result =
-        cached != null && !String.valueOf(cached).isBlank()
-            ? enricher.restore(
-                source.term(),
-                source.definition(),
-                source.note(),
-                String.valueOf(cached),
-                String.valueOf(record.get("ai_provider")),
-                String.valueOf(record.get("ai_model")))
-            : enricher.enrich(source.term(), source.definition(), source.note());
+    ImportRecordEnricher.EnrichedRecord result;
+    try {
+      result =
+          cached != null && !String.valueOf(cached).isBlank()
+              ? enricher.restore(
+                  source.term(),
+                  source.definition(),
+                  source.note(),
+                  String.valueOf(cached),
+                  String.valueOf(record.get("ai_provider")),
+                  String.valueOf(record.get("ai_model")))
+              : enricher.enrich(source.term(), source.definition(), source.note());
+    } catch (RuntimeException failure) {
+      throw new AiEnrichmentException(failure);
+    }
     database.update(
         """
         UPDATE source_import_records
@@ -177,6 +194,7 @@ public class SourceImportWorker {
     String note = candidateNote(enriched.processingNote());
     transactions.executeWithoutResult(
         ignored -> {
+          lockCandidateAdmission(normalized);
           DuplicateTarget duplicate = findDuplicate(normalized);
           if (duplicate != null) {
             updateDuplicateRecord(number(record.get("id")), normalized, duplicate);
@@ -397,19 +415,41 @@ public class SourceImportWorker {
   }
 
   private DuplicateTarget findDuplicate(String normalized) {
-    Object meme =
-        database.scalar(
-            "SELECT id FROM meme_entries WHERE normalized_term=? AND language_code='zh-CN' LIMIT 1",
+    Map<String, Object> duplicate =
+        database.optionalOne(
+            """
+            SELECT target_type, target_id
+            FROM (
+                SELECT 'meme' AS target_type, id AS target_id, 1 AS match_priority
+                FROM meme_entries
+                WHERE normalized_term=? AND language_code='zh-CN'
+                UNION ALL
+                SELECT 'variant' AS target_type, meme_id AS target_id, 2 AS match_priority
+                FROM meme_variants
+                WHERE normalized_variant=? AND status='active'
+                UNION ALL
+                SELECT 'candidate' AS target_type, id AS target_id, 3 AS match_priority
+                FROM candidate_entries
+                WHERE normalized_term=?
+            ) duplicate_matches
+            ORDER BY match_priority
+            LIMIT 1
+            """,
+            normalized,
+            normalized,
             normalized);
-    if (meme != null) return new DuplicateTarget("meme", number(meme));
-    Object variant =
-        database.scalar(
-            "SELECT meme_id FROM meme_variants WHERE normalized_variant=? AND status='active' LIMIT 1",
-            normalized);
-    if (variant != null) return new DuplicateTarget("variant", number(variant));
-    Object candidate =
-        database.scalar("SELECT id FROM candidate_entries WHERE normalized_term=? LIMIT 1", normalized);
-    return candidate == null ? null : new DuplicateTarget("candidate", number(candidate));
+    return duplicate == null
+        ? null
+        : new DuplicateTarget(
+            String.valueOf(duplicate.get("target_type")), number(duplicate.get("target_id")));
+  }
+
+  private void lockCandidateAdmission(String normalized) {
+    database.update(
+        "INSERT IGNORE INTO candidate_admission_locks(normalized_term) VALUES (?)", normalized);
+    database.optionalOne(
+        "SELECT normalized_term FROM candidate_admission_locks WHERE normalized_term=? FOR UPDATE",
+        normalized);
   }
 
   private Map<String, Object> parseNote(Object value) {
@@ -447,12 +487,27 @@ public class SourceImportWorker {
   }
 
   private String safeError(Exception error) {
-    String value = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    String value =
+        error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
     return value.length() > 2000 ? value.substring(0, 2000) : value;
   }
 
   private record ImportedCandidateData(
-      String term, String definition, String sourceUrl, String parserVersion, Map<String, Object> note) {}
+      String term,
+      String definition,
+      String sourceUrl,
+      String parserVersion,
+      Map<String, Object> note) {}
 
   private record DuplicateTarget(String type, Long id) {}
+
+  private static final class AiEnrichmentException extends RuntimeException {
+    private AiEnrichmentException(RuntimeException cause) {
+      super(cause);
+    }
+
+    private RuntimeException cause() {
+      return (RuntimeException) getCause();
+    }
+  }
 }

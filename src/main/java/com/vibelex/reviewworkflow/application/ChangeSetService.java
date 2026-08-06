@@ -5,7 +5,7 @@ import com.vibelex.candidatediscovery.domain.TermNormalizer;
 import com.vibelex.lexicon.application.LexiconSnapshotService;
 import com.vibelex.recognition.application.RecognitionIndex;
 import com.vibelex.recognitionv2.IndexSyncTaskService;
-import com.vibelex.recognitionv2.SemanticIndexService;
+import com.vibelex.search.SearchIndexService;
 import com.vibelex.shared.persistence.MyBatisDatabase;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -30,7 +30,7 @@ public class ChangeSetService {
   private final TermNormalizer normalizer;
   private final LexiconSnapshotService snapshots;
   private final RecognitionIndex recognitionIndex;
-  private final SemanticIndexService semanticIndex;
+  private final SearchIndexService semanticIndex;
   private final IndexSyncTaskService indexTasks;
 
   public ChangeSetService(
@@ -40,7 +40,7 @@ public class ChangeSetService {
       TermNormalizer normalizer,
       LexiconSnapshotService snapshots,
       RecognitionIndex recognitionIndex,
-      SemanticIndexService semanticIndex,
+      SearchIndexService semanticIndex,
       IndexSyncTaskService indexTasks) {
     this.database = database;
     this.mapper = mapper;
@@ -370,7 +370,7 @@ public class ChangeSetService {
     semanticIndex.rebuildAllAfterCommit();
   }
 
-  /** 刷新单条正式词条的 V1 内存索引与 V2 ES 投影。 */
+  /** 刷新单条正式词条的 V1 内存索引与 V2/V3 共享 ES 义项投影。 */
   public void refreshRecognitionIndex(long memeId) {
     refreshIndexes(memeId);
   }
@@ -583,19 +583,15 @@ public class ChangeSetService {
         """
         INSERT INTO meme_safety_policies(
             meme_id, profanity, offense, risk_tags, risk_level,
-            detect_enabled, display_enabled, generate_enabled,
-            recommend_enabled, moderation_policy, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            display_enabled, moderation_policy, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         memeId,
         bool(p, "profanity"),
         bool(p, "offense"),
         jsonOrNull(p.get("risk_tags")),
         text(p, "risk_level", "low"),
-        boolDefault(p, "detect_enabled", 1),
         boolDefault(p, "display_enabled", 1),
-        boolDefault(p, "generate_enabled", 1),
-        boolDefault(p, "recommend_enabled", 1),
         text(p, "moderation_policy", "normal"),
         nullableText(p, "notes"));
     for (JsonNode e : root.path("evidence")) {

@@ -38,7 +38,7 @@ const ENUM_LABELS = {
   partial: "部分失败",
   retry_wait: "等待重试",
   duplicate: "重复跳过",
-  imported: "已导入",
+  imported: "已进入候选",
   ignored: "已忽略",
   full: "全量",
   incremental: "增量",
@@ -123,7 +123,6 @@ const ENUM_LABELS = {
   update: "更新",
   rollback: "回滚",
   editorial: "人工编辑",
-  imported: "导入生成",
   automatic: "自动生成",
   draft: "草稿",
   converted: "已转换",
@@ -1180,7 +1179,7 @@ async function showEntryDetail(entryId) {
 
     find("#entry-detail-content").innerHTML = `
       <div class="entry-summary-card">
-        <div><span class="panel-kicker">${escapeHtml(entry.meme_code)}</span><h3>${escapeHtml(entry.canonical_term)}</h3><p><strong>词条起源：</strong>${escapeHtml(entry.origin_summary || "暂无说明")}</p></div>
+        <div><span class="panel-kicker">${escapeHtml(entry.meme_code)}</span><h3>${escapeHtml(entry.canonical_term)}</h3></div>
         <div class="entry-summary-meta">${statusBadge(entry.status)}${statusBadge(policy.risk_level)}${entry.status === "published" ? `<button type="button" class="danger-button" data-entry-withdraw="${escapeHtml(entry.id)}">撤回至候选池</button>` : ""}</div>
       </div>
       <dl class="detail-grid">
@@ -1190,16 +1189,14 @@ async function showEntryDetail(entryId) {
         <div class="detail-item"><dt>创建人 / 审核人</dt><dd>${escapeHtml(entry.created_by || "—")} / ${escapeHtml(entry.reviewed_by || "—")}</dd></div>
         <div class="detail-item"><dt>发布时间</dt><dd>${escapeHtml(entry.published_at || "—")}</dd></div>
       </dl>
+      <section class="detail-section entry-origin-section"><div class="detail-section-heading"><h3>词条起源</h3></div><p>${escapeHtml(entry.origin_summary || "暂无起源说明")}</p></section>
       ${detailSection("义项", senses, renderSenseCard)}
       <section class="detail-section"><div class="detail-section-heading"><h3>词形变体</h3><div class="variant-heading-actions"><span>${variants.length} 条</span>${detail.variantGenerationEnabled && entry.status === "published" ? '<button type="button" class="ai-variant-button" data-regenerate-variants="' + escapeHtml(entry.id) + '"><span aria-hidden="true">✦</span>AI生成变体</button><span class="ai-variant-progress" role="status" hidden>正在生成 AI 变体，请稍候…</span>' : ""}</div></div>${variants.length ? `<div class="variant-list">${variants.map(renderVariantCard).join("")}</div>` : '<div class="section-empty">暂无数据</div>'}</section>
       ${renderExampleSection(examples, (item) => `<p>${escapeHtml(item.example_text)}</p><div class="record-meta"><span>${escapeHtml(enumLabel(item.example_role))}</span><span>${escapeHtml(enumLabel(item.status))}</span></div>`)}
       ${detailSection("匹配规则", rules, (item) => `<article class="record-card"><strong>${escapeHtml(enumLabel(item.rule_type))}</strong><p>${escapeHtml(item.rule_value)}</p><div class="record-meta"><span>权重：${item.weight}</span><span>优先级：${item.priority}</span><span>${item.enabled ? "已启用" : "已停用"}</span></div></article>`)}
       <section class="detail-section"><div class="detail-section-heading"><h3>安全策略</h3></div><div class="policy-grid">
         <div class="policy-item"><span>风险等级</span><strong>${escapeHtml(enumLabel(policy.risk_level))}</strong></div>
-        <div class="policy-item"><span>识别</span><strong>${policy.detect_enabled ? "允许" : "禁止"}</strong></div>
         <div class="policy-item"><span>展示</span><strong>${policy.display_enabled ? "允许" : "禁止"}</strong></div>
-        <div class="policy-item"><span>生成</span><strong>${policy.generate_enabled ? "允许" : "禁止"}</strong></div>
-        <div class="policy-item"><span>推荐</span><strong>${policy.recommend_enabled ? "允许" : "禁止"}</strong></div>
         <div class="policy-item"><span>审核策略</span><strong>${escapeHtml(enumLabel(policy.moderation_policy))}</strong></div>
       </div></section>
       ${detailSection("数据导入来源", discoveryEvidence, (item) => `<article class="record-card"><strong>${escapeHtml(item.source_name)}</strong><p>${escapeHtml(item.evidence_note || "—")}</p></article>`, 3)}
@@ -1342,24 +1339,93 @@ document.querySelectorAll("[data-overview-tab]").forEach((button) => {
 
 async function loadIndexTasks() {
   const status = find("#index-task-status").value;
-  const data = await api(`/api/admin/recognition-v2/index/tasks?status=${encodeURIComponent(status)}&page=1&size=50`);
+  const [data, indexStatus] = await Promise.all([
+    api(`/api/admin/search/index/tasks?status=${encodeURIComponent(status)}&page=1&size=50`),
+    api("/api/admin/search/index"),
+  ]);
   const counts = Object.fromEntries((data.summary || []).map((item) => [item.status, item.count]));
-  find("#index-task-summary").innerHTML = ["pending", "processing", "failed", "succeeded"].map((key) => `<div class="stat-card"><span>${enumLabel(key)}</span><strong>${counts[key] || 0}</strong></div>`).join("");
+  const indexAlias = indexStatus.alias || "—";
+  const rebuild = indexStatus.rebuild || {};
+  const rebuildActive = ["preparing", "running"].includes(rebuild.status);
+  const rebuildButton = find("#search-index-rebuild");
+  rebuildButton.disabled = rebuildActive;
+  rebuildButton.textContent = rebuild.status === "preparing"
+    ? "准备重建（等待增量任务排空）…"
+    : rebuildActive ? `正在重建（${rebuild.succeeded_items || 0}/${rebuild.total_items || 0}）…` : "全量重建";
+  if (rebuildActive && rebuild.id) pollRebuild(rebuild.id);
+  const rebuildSummary = rebuild.status === "preparing" ? "等待增量任务排空" : `${rebuild.succeeded_items || 0}/${rebuild.total_items || 0}`;
+  find("#index-task-summary").innerHTML = `<div class="stat-card"><span>查询别名</span><strong class="index-alias" title="${escapeHtml(indexAlias)}">${escapeHtml(indexAlias)}</strong></div><div class="stat-card"><span>Mapping</span><strong>${indexStatus.mapping_compatible ? "V3.2 就绪" : "需要重建"}</strong></div>${rebuildActive ? `<div class="stat-card"><span>全量重建</span><strong>${rebuildSummary}</strong></div>` : ""}${["pending", "processing", "failed", "succeeded"].map((key) => `<div class="stat-card"><span>${enumLabel(key)}</span><strong>${counts[key] || 0}</strong></div>`).join("")}`;
   find("#index-task-count").textContent = `共 ${data.totalElements || 0} 条`;
   find("#index-task-table").innerHTML = renderTable(data.items || [], [
-    ["词条", (row) => `#${row.meme_id}`], ["操作", (row) => enumLabel(row.operation)], ["状态", (row) => statusBadge(row.status)], ["重试", (row) => row.retry_count], ["失败原因", (row) => escapeHtml(row.last_error || "—")], ["更新时间", (row) => row.updated_at || "—"], ["操作", (row) => row.status === "failed" ? `<button class="table-action" data-index-task-retry="${row.id}">重新入队</button>` : "—"],
+    ["词条", (row) => `<div class="index-task-entry"><strong>${escapeHtml(row.normalized_term || "—")}</strong><small>#${row.meme_id}</small></div>`], ["操作", (row) => enumLabel(row.operation)], ["状态", (row) => statusBadge(row.status)], ["重试", (row) => row.retry_count], ["失败原因", (row) => escapeHtml(row.last_error || "—")], ["更新时间", (row) => row.updated_at || "—"], ["操作", (row) => row.status === "failed" ? `<button class="table-action" data-index-task-retry="${row.id}">重新入队</button>` : "—"],
   ]);
-  document.querySelectorAll("[data-index-task-retry]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/admin/recognition-v2/index/tasks/${button.dataset.indexTaskRetry}/retry`, { method: "POST" }); showToast("任务已重新入队"); await loadIndexTasks(); }));
+  document.querySelectorAll("[data-index-task-retry]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/admin/search/index/tasks/${button.dataset.indexTaskRetry}/retry`, { method: "POST" }); showToast("任务已重新入队"); await loadIndexTasks(); }));
+}
+
+let rebuildPollTimer = null;
+let rebuildPollJobId = null;
+
+function pollRebuild(jobId) {
+  if (rebuildPollJobId === jobId && rebuildPollTimer) return;
+  if (rebuildPollTimer) window.clearInterval(rebuildPollTimer);
+  rebuildPollJobId = jobId;
+  rebuildPollTimer = window.setInterval(async () => {
+    try {
+      const status = await api(`/api/admin/search/index/rebuild/${jobId}`);
+      const button = find("#search-index-rebuild");
+      const active = ["preparing", "running"].includes(status.status);
+      button.disabled = active;
+      button.textContent = status.status === "preparing"
+        ? "准备重建（等待增量任务排空）…"
+        : active ? `正在重建（${status.succeeded_items || 0}/${status.total_items || 0}）…` : "全量重建";
+      if (!active) {
+        window.clearInterval(rebuildPollTimer);
+        rebuildPollTimer = null;
+        rebuildPollJobId = null;
+        showToast(status.status === "succeeded" ? "索引重建完成" : `索引重建失败：${status.last_error || "请查看服务日志"}`);
+        await loadIndexTasks();
+      }
+    } catch (error) {
+      showToast(`索引重建状态查询失败：${error.message}`);
+    }
+  }, 3000);
+}
+
+async function rebuildSearchIndex() {
+  if (!window.confirm("全量重建会创建新物理索引、切换共享别名并删除旧物理索引。确认继续吗？")) return;
+  const button = find("#search-index-rebuild");
+  button.disabled = true;
+  button.textContent = "正在重建…";
+  try {
+    const job = await api("/api/admin/search/index/rebuild", { method: "POST" });
+    showToast(`索引重建已启动，共 ${job.total_items || 0} 个义项任务`);
+    pollRebuild(job.id);
+    await loadIndexTasks();
+  } catch (error) {
+    showToast(`索引重建启动失败：${error.message}`);
+  } finally {
+    if (!rebuildPollTimer) {
+      button.disabled = false;
+      button.textContent = "全量重建";
+    }
+  }
 }
 
 const crawlState = { page: 1, size: 20, activeSource: null };
 let crawlPollTimer = null;
+let crawlStartPending = false;
 let currentCrawlError = "";
+
+function startCrawlerPolling() {
+  if (!crawlPollTimer) {
+    crawlPollTimer = window.setInterval(() => loadCrawler(crawlState.page).catch(() => {}), 3000);
+  }
+}
 
 function crawlRecordBadge(status) {
   const labels = {
     pending: "待处理", processing: "待处理", retry_wait: "待处理",
-    imported: "已导入", duplicate: "已存在", ignored: "已忽略", failed: "失败",
+    imported: "已进入候选", duplicate: "已存在", ignored: "已忽略", failed: "失败",
   };
   const tone = status === "imported" ? "success" : ["pending", "processing", "retry_wait"].includes(status) ? "info" : status === "failed" ? "warning" : "";
   return `<span class="badge ${tone}">${escapeHtml(labels[status] || status)}</span>`;
@@ -1424,12 +1490,13 @@ function aggregateCrawlerSources(sources) {
 
 function updateCrawlerProgress(source) {
   const progress = find("#crawl-progress");
-  const active = ["planning", "running"].includes(source.current_status);
+  const starting = crawlStartPending && source.source_code === crawlState.activeSource;
+  const active = starting || ["planning", "running"].includes(source.current_status);
   if (active) {
     const processed = (source.imported_count || 0) + (source.duplicate_count || 0) + (source.ignored_count || 0) + (source.failed_count || 0);
     progress.textContent = source.source_code === "all"
       ? "有来源正在同步，请选择具体来源查看进度或停止任务。"
-      : source.current_status === "planning"
+      : starting || source.current_status === "planning"
       ? `正在准备 ${source.source_name} 的同步任务…`
       : `正在同步 ${source.source_name}：已处理 ${processed} / ${source.discovered_count || 0} 条。`;
     progress.dataset.state = "running";
@@ -1443,8 +1510,8 @@ function updateCrawlerProgress(source) {
     progress.textContent = "";
     progress.dataset.state = "idle";
   }
-  if (active && !crawlPollTimer) {
-    crawlPollTimer = window.setInterval(() => loadCrawler(crawlState.page).catch(() => {}), 3000);
+  if (active) {
+    startCrawlerPolling();
   } else if (!active && crawlPollTimer) {
     window.clearInterval(crawlPollTimer);
     crawlPollTimer = null;
@@ -1513,7 +1580,7 @@ async function loadCrawler(page = crawlState.page) {
     .map(([label, value]) => `<div class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
     .join("");
   const allSources = crawlState.activeSource === "all";
-  find("#crawl-sync").disabled = allSources || !source.enabled || ["planning", "running"].includes(source.current_status);
+  find("#crawl-sync").disabled = allSources || crawlStartPending || !source.enabled || ["planning", "running"].includes(source.current_status);
   find("#crawl-cancel").hidden = allSources || !["planning", "running"].includes(source.current_status);
   find("#crawl-source-summary").title = allSources ? "全部来源汇总" : checkpoint ? `检查点：${JSON.stringify(checkpoint)}` : "尚未建立检查点";
 
@@ -1550,8 +1617,20 @@ async function loadCrawler(page = crawlState.page) {
 async function crawlAction(action, confirmation) {
   if (!crawlState.activeSource || crawlState.activeSource === "all") return;
   if (confirmation && !window.confirm(confirmation)) return;
+  const starting = action === "sync";
+  if (starting) {
+    crawlStartPending = true;
+    const progress = find("#crawl-progress");
+    const sourceName = find("#crawl-active-source").selectedOptions[0]?.textContent || crawlState.activeSource;
+    progress.textContent = `正在准备 ${sourceName} 的同步任务…`;
+    progress.dataset.state = "running";
+    progress.hidden = false;
+    find("#crawl-sync").disabled = true;
+    startCrawlerPolling();
+  }
   try {
     const result = await api(`/api/admin/v3/crawl-sources/${encodeURIComponent(crawlState.activeSource)}/${action}`, { method: "POST" });
+    if (starting) crawlStartPending = false;
     if (action === "sync" && result.sync_outcome === "no_change") {
       showToast("未发现新内容，检查点保持不变");
     } else if (action === "sync" && result.sync_outcome === "checkpoint_updated") {
@@ -1563,6 +1642,10 @@ async function crawlAction(action, confirmation) {
     }
     await loadCrawler();
   } catch (error) {
+    if (starting) {
+      crawlStartPending = false;
+      await loadCrawler().catch(() => {});
+    }
     showToast(error.message);
   }
 }
@@ -1615,6 +1698,7 @@ find("#copy-crawl-error").addEventListener("click", async () => {
 });
 find("#index-task-refresh").addEventListener("click", loadIndexTasks);
 find("#index-task-search").addEventListener("click", loadIndexTasks);
+find("#search-index-rebuild").addEventListener("click", rebuildSearchIndex);
 find("#import-source").addEventListener("change", () => {
   find("#source-version").value = "manual-local";
   find("#license-status").value = "approved";

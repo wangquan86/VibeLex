@@ -1,4 +1,4 @@
-package com.vibelex.recognitionv2;
+package com.vibelex.search;
 
 import java.util.List;
 

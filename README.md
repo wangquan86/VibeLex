@@ -5,13 +5,14 @@
 
 VibeLex 用于发现、整理、审核、发布和识别网络语言表达。系统同时维护词义、语境、变体、例句、来源证据和风险策略，并通过人工审核保证正式词条质量。
 
-**当前版本：V3.1** · [发布说明](docs/versions/v3.1/release-notes.md) · [部署说明](docs/versions/v3.1/deployment.md) · [OpenAPI](docs/versions/v3.1/openapi.yaml)
+**当前版本：V3.2** · [发布说明](docs/versions/v3.2/release-notes.md) · [部署说明](docs/versions/v3.2/deployment.md) · [OpenAPI](docs/versions/v3.2/openapi.yaml)
 
 ## 1. 核心能力
 
 - 管理网络梗、流行语、缩写、谐音、模板句式和圈层表达；
 - 使用主词条、义项和变体表达一词多义、别名及不同写法；
 - 通过词面规则、上下文规则、Elasticsearch 和 embedding 完成语境识别；
+- 根据剧情、台词、事件或对话上下文推荐语义相关的已发布词条；
 - 从人工录入、CHIME、Buzzword、波普词典和热梗百科发现候选词条；
 - 对文件导入和网站爬取执行逐条判重、AI 信息补全、失败重试和任务追踪；
 - 通过候选编辑、提交审核、批准发布或退回修改治理词条；
@@ -57,6 +58,7 @@ VibeLex 用于发现、整理、审核、发布和识别网络语言表达。系
 | V2.0 | Elasticsearch 词法/语义混合召回、索引重建和增量同步 |
 | V3.0 | 多来源网站爬取、检查点、逐条记录、重试和候选导入 |
 | V3.1 | 热梗百科 AI 提取、文件导入任务化、软停止及时间字段完善 |
+| V3.2 | 上下文词条推荐 API、共享义项索引和加权 RRF 融合 |
 
 V3.1 中，波普词典和热梗百科分别使用 `scheduled-enabled` 控制定时同步。设为 `false` 时不会由 Cron 自动发起任务，但仍可在管理页面手动爬取。
 
@@ -70,7 +72,14 @@ V3.1 中，波普词典和热梗百科分别使用 `scheduled-enabled` 控制定
 - [归一化规范](docs/reference/normalization.md)
 - [数据来源治理](docs/reference/data-source-governance.md)
 
-### 5.2 V3.1
+### 5.2 V3.2
+
+- [推荐 API 设计](docs/versions/v3.2/recommendation-api-design.md)
+- [发布说明](docs/versions/v3.2/release-notes.md)
+- [部署说明](docs/versions/v3.2/deployment.md)
+- [OpenAPI](docs/versions/v3.2/openapi.yaml)
+
+### 5.3 V3.1
 
 - [发布说明](docs/versions/v3.1/release-notes.md)
 - [热梗百科与 AI 信息提取](docs/versions/v3.1/regengbaike-ai-crawler.md)
@@ -78,7 +87,7 @@ V3.1 中，波普词典和热梗百科分别使用 `scheduled-enabled` 控制定
 - [部署说明](docs/versions/v3.1/deployment.md)
 - [OpenAPI](docs/versions/v3.1/openapi.yaml)
 
-### 5.3 历史版本
+### 5.4 历史版本
 
 - V1.0：[系统架构](docs/versions/v1.0/system-architecture.md)、[数据集导入](docs/versions/v1.0/dataset-import.md)、[识别引擎](docs/versions/v1.0/recognition-engine.md)、[AI 变体生成](docs/versions/v1.0/llm-variant-generation.md)
 - V2.0：[识别与 Elasticsearch](docs/versions/v2.0/recognition-elasticsearch.md)、[OpenAPI](docs/versions/v2.0/openapi.yaml)
@@ -109,12 +118,12 @@ Copy-Item .env.example .env
 ```powershell
 mvn test
 mvn package
-java -jar target/vibelex-3.1.0.jar
+java -jar target/vibelex-3.2.0.jar
 ```
 
 打开 `http://localhost:8080/` 使用管理页面。Flyway 在首次启动时自动执行数据库迁移；CHIME 和 Buzzword 文件应放在项目 `data/` 目录。
 
-服务器部署、systemd、日志、端口和定时任务配置见 [V3.1 部署说明](docs/versions/v3.1/deployment.md)。
+服务器部署、索引重建、V2 回归和推荐开关步骤见 [V3.2 部署说明](docs/versions/v3.2/deployment.md)。
 
 ## 7. License
 

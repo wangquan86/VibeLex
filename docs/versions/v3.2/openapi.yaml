@@ -1,0 +1,270 @@
+openapi: 3.0.3
+info:
+  title: VibeLex Recommendation API
+  version: 3.2.0
+  description: 基于自然语言上下文推荐适合使用的已发布中文网络词条。
+paths:
+  /api/v3/recommendations:
+    post:
+      summary: 推荐适合当前上下文的词条
+      description: >-
+        根据剧情、台词、事件或聊天上下文进行语义和词面召回、融合及重排序。
+        起源信息是否返回由服务端配置控制，调用方不能通过请求参数修改。
+      operationId: recommendMemes
+      requestBody:
+        required: true
+        description: 推荐上下文及返回数量设置。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationRequest'
+            example:
+              context: 这薯片吃起来特别 treetree 的，真的破防了。
+              language_code: zh-CN
+              max_results: 10
+      responses:
+        '200':
+          description: 推荐完成；没有合格候选时 recommendations 为空数组。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationResponse'
+              example:
+                request_id: 16187632-f60f-41f5-bcd7-620c1dcdbcd0
+                recommendations:
+                  - meme_id: 2556
+                    meme_code: MEME_002556
+                    canonical_term: treetree的
+                    variants: []
+                    sense_id: 2556
+                    sense_no: 1
+                    definition: “treetree的”是一个谐音梗，通常形容食物或物品具有“脆脆”的口感或外观。
+                    examples:
+                      - 这款薯片入口就是 treetree 的感觉。
+                    category: other
+                    domain_tags: []
+                    origin:
+                      summary: 该表达来自对“脆脆的”的谐音模仿。
+                      evidence:
+                        - source_name: 来源名称
+                          source_url: https://example.com/origin
+                          source_layer: dictionary
+                          note: 支持该起源结论的证据摘要。
+                          observed_at: '2026-08-05T12:30:00Z'
+                          confidence: 0.9
+                    relevance_score: 0.896642
+                engine_version: '3.2'
+                index_version: vibelex_sense_current
+                processed_at: '2026-08-05T07:54:08Z'
+        '400':
+          description: 上下文为空、语言不受支持或 max_results 超出范围。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '413':
+          description: 上下文的 Unicode 码点数量超过服务端限制。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: 推荐功能未启用、embedding 不可用或 Elasticsearch 语义检索不可用。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+components:
+  schemas:
+    RecommendationRequest:
+      type: object
+      description: V3 推荐请求。起源响应开关不属于请求参数，由服务端配置统一控制。
+      required: [context]
+      additionalProperties: false
+      properties:
+        context:
+          type: string
+          minLength: 1
+          maxLength: 480
+          description: 单段自然语言上下文；去除首尾空白后不能为空，长度按 Unicode 码点计算。
+        language_code:
+          type: string
+          default: zh-CN
+          enum: [zh-CN]
+          description: 上下文语言代码；V3.2 仅支持 zh-CN，未传时默认为 zh-CN。
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+          description: 最多返回的推荐词条数量；同一 meme_id 最多返回一个义项，未传时默认为 10。
+
+    RecommendationResponse:
+      type: object
+      description: V3 推荐成功响应。
+      required: [request_id, recommendations, engine_version, index_version, processed_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: 本次推荐请求的唯一标识，用于日志追踪和问题排查。
+        recommendations:
+          type: array
+          description: 按 relevance_score 从高到低排列的推荐词条；没有合格候选时为空数组。
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        engine_version:
+          type: string
+          enum: ['3.2']
+          description: 生成本次响应的推荐引擎版本。
+        index_version:
+          type: string
+          description: 本次检索使用的 Elasticsearch 共享义项索引别名或版本标识。
+        processed_at:
+          type: string
+          format: date-time
+          description: 推荐处理完成时间，采用 ISO 8601 UTC 时间格式。
+
+    Recommendation:
+      type: object
+      description: 一个适合当前上下文使用的推荐词条及其最高排名义项。
+      required:
+        - meme_id
+        - meme_code
+        - canonical_term
+        - variants
+        - sense_id
+        - sense_no
+        - definition
+        - examples
+        - category
+        - domain_tags
+        - relevance_score
+      properties:
+        meme_id:
+          type: integer
+          format: int64
+          description: 词条在 VibeLex 中的唯一数字 ID。
+        meme_code:
+          type: string
+          description: 词条稳定业务编码，例如 MEME_002556。
+        canonical_term:
+          type: string
+          description: 词条的规范名称或标准写法。
+        variants:
+          type: array
+          description: 当前推荐义项可使用的有效变体、别称或其他写法；没有数据时为空数组。
+          items:
+            type: string
+            description: 一个有效词条变体。
+        sense_id:
+          type: integer
+          format: int64
+          description: 本次上下文下被推荐义项的唯一数字 ID。
+        sense_no:
+          type: integer
+          description: 该义项在所属词条中的顺序编号，从 1 开始。
+        definition:
+          type: string
+          description: 当前推荐义项的完整释义。
+        examples:
+          type: array
+          maxItems: 3
+          description: 当前推荐义项的已审核正向例句，最多返回 3 条；没有数据时为空数组。
+          items:
+            type: string
+            description: 一个展示当前义项典型用法的例句。
+        category:
+          type: string
+          description: 词条所属的业务分类代码。
+        domain_tags:
+          type: array
+          description: 词条适用领域或场景标签；没有数据时为空数组。
+          items:
+            type: string
+            description: 一个领域或场景标签。
+        origin:
+          allOf:
+            - $ref: '#/components/schemas/RecommendationOrigin'
+          description: >-
+            词条起源信息。服务端 vibelex.recommendation.v3.origin.enabled 默认为 true；
+            开启时返回，关闭或起源补充异常时整个字段省略。
+        relevance_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >-
+            当前词条与请求上下文的相关性分数，保留 6 位小数。
+            Reranker 成功时为重排序模型分数，否则为融合后的 RRF 分数。
+
+    RecommendationOrigin:
+      type: object
+      description: 词条起源说明和支撑该说明的有效证据集合。
+      required: [evidence]
+      properties:
+        summary:
+          type: string
+          description: 经过审核的词条文化起源简述；没有可靠起源说明时省略。
+        evidence:
+          type: array
+          description: >-
+            适用于整个词条或当前推荐义项的有效起源证据，按观察时间排列；
+            没有证据时为空数组，默认最多返回 10 条，实际上限可由服务端配置调整。
+          items:
+            $ref: '#/components/schemas/RecommendationOriginEvidence'
+
+    RecommendationOriginEvidence:
+      type: object
+      description: 一条用于支撑词条起源结论的来源证据。
+      required: [source_name, source_layer]
+      properties:
+        sense_id:
+          type: integer
+          format: int64
+          description: 义项专属证据关联的义项 ID；适用于整个词条的证据省略该字段。
+        source_name:
+          type: string
+          description: 证据来源的名称，例如词典、社区、数据集或内部编辑来源名称。
+        source_url:
+          type: string
+          format: uri
+          description: 可追溯到该证据的具体来源链接；没有可靠链接时省略。
+        source_layer:
+          type: string
+          description: 来源功能层代码，例如 dictionary、community、dataset、explanation 或 internal。
+        note:
+          type: string
+          description: 支撑起源结论的必要内容摘要；没有摘要时省略。
+        observed_at:
+          type: string
+          format: date-time
+          description: 发现或核验证据的时间，采用 ISO 8601 UTC 时间格式；没有记录时省略。
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 该证据对起源结论的支持置信度，范围为 0 到 1；未评估时省略。
+
+    ProblemDetail:
+      type: object
+      description: 遵循 RFC 7807 风格的接口错误响应。
+      properties:
+        type:
+          type: string
+          format: uri
+          description: 标识错误类型的 URI；没有专用类型时通常为 about:blank。
+        title:
+          type: string
+          description: 错误类型的简短标题。
+        status:
+          type: integer
+          description: 与响应一致的 HTTP 状态码。
+        detail:
+          type: string
+          description: 面向调用方的具体错误说明。
+        instance:
+          type: string
+          format: uri
+          description: 标识本次错误实例或请求路径的 URI。
