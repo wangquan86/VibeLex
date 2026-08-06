@@ -178,7 +178,7 @@ V3.2 将最大长度设为 480，是为了与当前 BGE 查询输入能力和 V2
 
 调用现有 `EmbeddingProvider` 生成上下文向量，再对义项文档执行 Elasticsearch kNN 查询。
 
-共享索引在构建阶段限定为已发布或已归档词条的有效义项。语义查询应用以下过滤条件：
+共享索引在构建阶段限定为已发布词条的有效义项。语义查询应用以下过滤条件：
 
 - `entry_status = published`；
 - `language_code = zh-CN`。
@@ -277,24 +277,24 @@ V2 与 V3 一起改用该文档结构，不再保留旧 mapping 中的 `scenes`�
 共享索引只投影正式词条的有效义项：
 
 ```text
-meme_entries.status IN (published, archived)
+meme_entries.status = published
 AND meme_senses.status = active
 ```
 
-共享索引同时保存 `published` 和 `archived`，并在文档中保存 `entry_status`。V2 查询两种正式状态并继续执行原文锚定；普通词条检索也可以查询归档词条；V3 额外过滤 `entry_status=published`，不主动推荐归档词条。
+共享索引只保存 `published`，并在文档中保存 `entry_status`。`archived` 仅用于数据库内部的历史审计，不进入共享索引，也不参与 V1、V2 识别、V3 推荐、普通查询或后台管理查询。
 
-`detect_enabled` 没有独立的数据治理来源，并且与“归档词条仍允许识别”的产品规则冲突；`generate_enabled` 和 `recommend_enabled` 只在发布时自动赋值并作为 V2 响应元数据，不参与任何识别、检索、排序或过滤。本期删除这三个字段，同时移除候选发布赋值、归档更新、V1/V2 读取、ES mapping/查询过滤、V2 响应字段和管理页面展示。义项级 `status` 继续保留，只有 `active` 义项进入共享索引。
+`detect_enabled` 没有独立的数据治理来源，词条是否参与识别直接由 `published` 生命周期决定；`generate_enabled` 和 `recommend_enabled` 只在发布时自动赋值并作为 V2 响应元数据，不参与任何识别、检索、排序或过滤。本期删除这三个字段，同时移除候选发布赋值、归档更新、V1/V2 读取、ES mapping/查询过滤、V2 响应字段和管理页面展示。义项级 `status` 继续保留，只有已发布词条的 `active` 义项进入共享索引。
 
 ### 5.4 V2 识别调整
 
 V2 外部路径继续使用 `POST /api/v2/recognitions`，原文锚定、offset、上下文规则、义项消歧、重叠处理和置信度流程保持不变。索引相关实现调整为：
 
-- MySQL 规则索引加载 `published` 和 `archived` 的正式词条，只加载 `active` 义项；
+- MySQL 规则索引只加载 `published` 正式词条及其 `active` 义项；
 - ES 词法召回使用 `canonical_term`、`variants`、`definition`、`examples` 和 `domain_tags`，其中词条名和变体保持高权重；
 - ES 语义召回使用新的共享义项向量；
 - 纯语义候选仍必须通过词条名或变体锚定到原文后才能成为 V2 结果；
 - V2 响应的 `policy` 中删除 `detect_enabled`、`generate_enabled` 和 `recommend_enabled`；
-- 已归档词条继续允许识别。
+- 内部归档词条不参与识别。
 
 ### 5.5 Embedding 文本
 
@@ -306,7 +306,7 @@ V2 外部路径继续使用 `POST /api/v2/recognitions`，原文锚定、offset�
 
 不拼接来源原文、起源背景、审核备注和风险备注。索引端和查询端继续使用同一 embedding 模型、向量维度和归一化约定。
 
-现有 `index_sync_tasks` 继续负责增量同步；全量重建使用独立的 `search_rebuild_jobs` 和 `search_rebuild_items` 任务表，以分批、可重试的方式写入临时索引，全部成功后再切换别名。全量任务处于 `preparing` 或 `running` 时，增量任务继续入队但暂停消费；切换成功或全量失败后恢复消费。词条从 `published` 变为 `archived` 时不得删除索引文档，而应把文档的 `entry_status` 更新为 `archived`；义项变为非 `active` 或词条离开正式状态范围时，删除对应文档。
+现有 `index_sync_tasks` 继续负责增量同步；全量重建使用独立的 `search_rebuild_jobs` 和 `search_rebuild_items` 任务表，以分批、可重试的方式写入临时索引，全部成功后再切换别名。全量任务处于 `preparing` 或 `running` 时，增量任务继续入队但暂停消费；切换成功或全量失败后恢复消费。词条从 `published` 撤回并变为内部 `archived` 时写入 `DELETE` 任务；义项变为非 `active` 或词条离开已发布状态时，同样删除对应文档。
 
 ---
 
@@ -409,7 +409,7 @@ ES 地址、索引别名和 embedding 服务连接信息移动到共享 `vibelex
 - 请求字段、Unicode 长度、默认值和上限校验；
 - 语义/词法候选合并、加权 RRF 计算和稳定排序；
 - 同一词条多个义项只返回最高排名义项；
-- `published`、`archived` 和 `active` 义项的索引准入，以及 V3 对归档词条的排除；
+- `published` 与 `active` 义项的索引准入，以及归档词条在所有查询链路中的排除；
 - 三个冗余策略字段的数据库迁移、发布/归档流程和 V2 契约清理；
 - embedding 或语义查询失败时返回 `503`，词法失败时仍返回语义结果；
 - 正常空结果与依赖失败能够区分；
@@ -422,7 +422,7 @@ ES 地址、索引别名和 embedding 服务连接信息移动到共享 `vibelex
 V3.2 只验证数据是否按照设计逻辑进入索引、参与检索并形成响应：
 
 - `published + active` 义项能够进入 V3 推荐；
-- `archived` 义项仍能被 V2 识别，但不会进入 V3 推荐；
+- `archived` 词条不会进入共享索引、V2 识别或 V3 推荐；
 - 非正式词条和非 `active` 义项不会进入共享索引；
 - 语义候选不需要出现在原文中即可进入 V3 融合排序；
 - V2 语义候选仍必须锚定原文后才能输出；
@@ -481,7 +481,7 @@ V3.2 完成不以“接口能够返回若干词条”为唯一标准。以下条
 
 1. 调用方能用一段中文上下文获得结构化、去重、按相关性排序的词条列表；
 2. 纯语义相关但未出现在原文中的词条可以进入结果；
-3. 只有已发布的 active 义项可以进入推荐结果，已归档义项仍可供 V2 识别但不会被主动推荐；
+3. 只有已发布的 active 义项可以进入识别和推荐结果，内部归档词条不参与任何业务查询；
 4. 推荐链路不生成文案、不调用 LLM、不承担应用层智能体逻辑；
 5. 正常空结果与语义服务不可用具有明确且不同的契约；
 6. V2 识别能力在共享索引扩展后保持兼容；

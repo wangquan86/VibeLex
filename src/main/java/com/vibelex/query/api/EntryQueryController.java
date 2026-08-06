@@ -17,12 +17,10 @@ public class EntryQueryController {
     this.snapshots = snapshots;
   }
 
-  /** 查询允许展示的正式词条；归档词条由调用方显式选择是否包含。 */
+  /** 查询当前已发布的正式词条；历史归档不属于业务查询范围。 */
   @GetMapping
-  public List<Map<String, Object>> list(
-      @RequestParam(required = false) String q,
-      @RequestParam(defaultValue = "false") boolean includeArchived) {
-    String statuses = includeArchived ? "('published','archived')" : "('published')";
+  public List<Map<String, Object>> list(@RequestParam(required = false) String q) {
+    String statuses = "('published')";
 
     if (q == null || q.isBlank()) {
       return database.list(
@@ -59,6 +57,10 @@ public class EntryQueryController {
 
   @GetMapping("/{id}")
   public Object get(@PathVariable long id) {
+    Object status = database.scalar("SELECT status FROM meme_entries WHERE id = ?", id);
+    if (!"published".equals(status)) {
+      throw new IllegalArgumentException("正式词条不存在");
+    }
     Map<String, Object> policy =
         database.one("SELECT display_enabled FROM meme_safety_policies WHERE meme_id = ?", id);
     if (((Number) policy.get("display_enabled")).intValue() == 0) {

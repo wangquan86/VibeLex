@@ -84,7 +84,7 @@
       <section id="candidates" class="page">
         <div class="page-heading"><div><span class="eyebrow">CANDIDATES</span><h1>候选词条池</h1><p>统一录入、编辑和提交人工候选与导入候选。</p></div><div class="heading-actions"><button data-refresh="candidates" class="secondary-button">刷新列表</button><button id="create-candidate" class="primary-button">新增候选词条</button></div></div>
         <div class="filter-panel compact-filter candidate-filter">
-          <label>候选状态<select id="candidate-status"><option value="editing">编辑中</option><option value="pending_review">审核中</option><option value="returned">已退回</option><option value="published">已发布</option><option value="all">全部状态</option></select></label>
+          <label>候选状态<select id="candidate-status"><option value="editing">编辑中</option><option value="pending_review">审核中</option><option value="returned">已退回</option><option value="all">全部有效候选</option></select></label>
           <label>来源<select id="candidate-source"><option value="">全部来源</option></select></label>
           <label class="search-field">搜索词条<input id="candidate-query" placeholder="词形、归一化词形或释义"></label>
           <button id="candidate-search" class="primary-button">查询</button>
@@ -103,7 +103,7 @@
       <section id="reviews" class="page">
         <div class="page-heading"><div><span class="eyebrow">REVIEW CENTER</span><h1>候选审核中心</h1><p>审核已提交并锁定的候选词条，批准后发布为正式词条。</p></div></div>
         <div class="filter-panel compact-filter review-filter">
-          <label>审核状态<select id="review-status"><option value="pending_review">待审核</option><option value="returned">已退回</option><option value="published">已发布</option><option value="all">全部状态</option></select></label>
+          <label>审核状态<select id="review-status"><option value="pending_review">待审核</option><option value="returned">已退回</option><option value="all">全部有效候选</option></select></label>
           <label>来源<select id="review-source"><option value="">全部来源</option></select></label>
           <label class="search-field">搜索候选<input id="review-query" placeholder="候选词形、释义或提交人"></label>
           <button id="review-search" class="primary-button">查询</button>
@@ -124,7 +124,6 @@
         <div class="filter-panel compact-filter entry-filter">
           <label class="search-field">词条搜索<input id="entry-query" placeholder="词条编号、标准词形或变体"></label>
           <label>来源<select id="entry-source"><option value="">全部来源</option></select></label>
-          <label>发布状态<select id="entry-status"><option value="published">已发布</option><option value="archived">已归档</option><option value="all">全部状态</option></select></label>
           <label>风险等级<select id="entry-risk"><option value="all">全部风险</option><option value="none">无风险</option><option value="low">低风险</option><option value="medium">中风险</option><option value="high">高风险</option><option value="restricted">受限</option></select></label>
           <button id="entry-search" class="primary-button">查询</button>
         </div>

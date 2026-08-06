@@ -62,7 +62,10 @@ public class ChangeSetService {
     int safeSize = Math.max(10, Math.min(size, 100));
     long offset = (long) (safePage - 1) * safeSize;
     String keyword = query == null ? "" : query.trim();
-    StringBuilder where = new StringBuilder(" WHERE 1 = 1");
+    StringBuilder where =
+        new StringBuilder(
+            " WHERE (meme_id IS NULL OR EXISTS (SELECT 1 FROM meme_entries e "
+                + "WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'))");
     List<Object> filterArgs = new ArrayList<>();
     if (!"all".equals(selectedStatus)) {
       where.append(" AND status = ?");
@@ -106,7 +109,14 @@ public class ChangeSetService {
   }
 
   public Map<String, Object> get(long id) {
-    return database.one("SELECT * FROM entry_change_sets WHERE id=?", id);
+    return database.one(
+        """
+        SELECT cs.*
+        FROM entry_change_sets cs
+        LEFT JOIN meme_entries e ON e.id = cs.meme_id
+        WHERE cs.id = ? AND (cs.meme_id IS NULL OR e.status = 'published')
+        """,
+        id);
   }
 
   public Map<String, Object> detail(long id) {
@@ -133,6 +143,7 @@ public class ChangeSetService {
       if (memeId == null) {
         throw new IllegalArgumentException("update 必须指定 meme_id");
       }
+      requirePublishedEntry(memeId);
       if (baseVersion == null) {
         baseVersion =
             numberAsInt(
@@ -166,6 +177,10 @@ public class ChangeSetService {
             UPDATE entry_change_sets
             SET proposed_snapshot = ?, change_summary = ?
             WHERE id = ? AND status = 'draft'
+              AND (meme_id IS NULL OR EXISTS (
+                SELECT 1 FROM meme_entries e
+                WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'
+              ))
             """,
             json(snapshot),
             summary,
@@ -189,6 +204,10 @@ public class ChangeSetService {
                   UPDATE entry_change_sets
                   SET status = 'pending_review', submitted_by = ?, submitted_at = ?
                   WHERE id = ? AND status = 'draft'
+                    AND (meme_id IS NULL OR EXISTS (
+                      SELECT 1 FROM meme_entries e
+                      WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'
+                    ))
                   """,
                   who,
                   LocalDateTime.now(),
@@ -199,6 +218,10 @@ public class ChangeSetService {
                   UPDATE entry_change_sets
                   SET status = 'draft', submitted_by = NULL, submitted_at = NULL
                   WHERE id = ? AND status = 'pending_review'
+                    AND (meme_id IS NULL OR EXISTS (
+                      SELECT 1 FROM meme_entries e
+                      WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'
+                    ))
                   """,
                   id);
           case "reject" ->
@@ -208,6 +231,10 @@ public class ChangeSetService {
                   SET status = 'rejected', reviewed_by = ?, reviewed_at = ?,
                       review_comment = ?
                   WHERE id = ? AND status = 'pending_review'
+                    AND (meme_id IS NULL OR EXISTS (
+                      SELECT 1 FROM meme_entries e
+                      WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'
+                    ))
                   """,
                   who,
                   LocalDateTime.now(),
@@ -220,6 +247,10 @@ public class ChangeSetService {
                   SET status = 'draft', reviewed_by = NULL, reviewed_at = NULL,
                       review_comment = NULL
                   WHERE id = ? AND status = 'rejected'
+                    AND (meme_id IS NULL OR EXISTS (
+                      SELECT 1 FROM meme_entries e
+                      WHERE e.id = entry_change_sets.meme_id AND e.status = 'published'
+                    ))
                   """,
                   id);
           default -> throw new IllegalArgumentException("未知状态操作");
@@ -245,7 +276,7 @@ public class ChangeSetService {
       memeId = createEntry(proposed.path("meme_entry"), reviewer);
       nextVersion = 1;
     } else {
-      Map<String, Object> entry = lockEntry(memeId);
+      Map<String, Object> entry = lockPublishedEntry(memeId);
       int current = ((Number) entry.get("current_version")).intValue();
       int base = ((Number) cs.get("base_version")).intValue();
       if (current != base) {
@@ -383,7 +414,7 @@ public class ChangeSetService {
   @Transactional
   public Map<String, Object> rollback(long memeId, int targetVersion, String summary) {
     // 回滚始终追加新版本，绝不复用历史版本号或删除审计记录。
-    Map<String, Object> entry = lockEntry(memeId);
+    Map<String, Object> entry = lockPublishedEntry(memeId);
     Object oldValue =
         database.scalar(
             "SELECT snapshot FROM meme_revisions WHERE meme_id=? AND version=?",
@@ -465,7 +496,7 @@ public class ChangeSetService {
         UPDATE meme_entries
         SET canonical_term = ?, normalized_term = ?, language_code = ?,
             category = ?, domain_tags = ?, origin_summary = ?,
-            trend_status = ?, heat_score = ?, status = ?,
+            trend_status = ?, heat_score = ?, status = 'published',
             current_version = ?, reviewed_by = ?
         WHERE id = ?
         """,
@@ -477,7 +508,6 @@ public class ChangeSetService {
         nullableText(e, "origin_summary"),
         text(e, "trend_status", "untracked"),
         decimal(e, "heat_score"),
-        text(e, "status", "published"),
         version,
         reviewer,
         id);
@@ -643,11 +673,30 @@ public class ChangeSetService {
   }
 
   private Map<String, Object> lockChangeSet(long id) {
-    return database.one("SELECT * FROM entry_change_sets WHERE id=? FOR UPDATE", id);
+    return database.one(
+        """
+        SELECT cs.*
+        FROM entry_change_sets cs
+        LEFT JOIN meme_entries e ON e.id = cs.meme_id
+        WHERE cs.id = ? AND (cs.meme_id IS NULL OR e.status = 'published')
+        FOR UPDATE
+        """,
+        id);
   }
 
   private Map<String, Object> lockEntry(long id) {
     return database.one("SELECT * FROM meme_entries WHERE id=? FOR UPDATE", id);
+  }
+
+  private Map<String, Object> lockPublishedEntry(long id) {
+    return database.one(
+        "SELECT * FROM meme_entries WHERE id=? AND status='published' FOR UPDATE", id);
+  }
+
+  private void requirePublishedEntry(long id) {
+    Object found =
+        database.scalar("SELECT 1 FROM meme_entries WHERE id=? AND status='published'", id);
+    if (found == null) throw new IllegalArgumentException("正式词条不存在");
   }
 
   private long insert(String sql, Object... args) {

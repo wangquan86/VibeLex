@@ -37,7 +37,7 @@ public class CandidateService {
   private static final Logger log = LoggerFactory.getLogger(CandidateService.class);
 
   private static final Set<String> SUPPORTED_STATUSES =
-      Set.of("editing", "pending_review", "returned", "published", "all");
+      Set.of("editing", "pending_review", "returned", "all");
   private static final Set<String> FIXED_CATEGORIES =
       Set.of(
           "homophone",
@@ -95,7 +95,7 @@ public class CandidateService {
       where.append(" AND c.status = ?");
       filterArgs.add(selectedStatus);
     } else {
-      where.append(" AND c.status IN ('editing', 'pending_review', 'returned', 'published')");
+      where.append(" AND c.status IN ('editing', 'pending_review', 'returned')");
     }
     if (!keyword.isBlank()) {
       where.append(
@@ -244,36 +244,7 @@ public class CandidateService {
   }
 
   private CrawlerImportResult findCrawlerDuplicate(String normalized) {
-    Map<String, Object> duplicate =
-        database.optionalOne(
-            """
-            SELECT target_type, target_id
-            FROM (
-                SELECT 'meme' AS target_type, id AS target_id, 1 AS match_priority
-                FROM meme_entries
-                WHERE normalized_term = ?
-                UNION ALL
-                SELECT 'variant' AS target_type, meme_id AS target_id, 2 AS match_priority
-                FROM meme_variants
-                WHERE normalized_variant = ? AND status = 'active'
-                UNION ALL
-                SELECT 'candidate' AS target_type, id AS target_id, 3 AS match_priority
-                FROM candidate_entries
-                WHERE normalized_term = ?
-            ) duplicate_matches
-            ORDER BY match_priority
-            LIMIT 1
-            """,
-            normalized,
-            normalized,
-            normalized);
-    if (duplicate == null) return null;
-    return new CrawlerImportResult(
-        "duplicate",
-        null,
-        String.valueOf(duplicate.get("target_type")),
-        numberAsLong(duplicate.get("target_id")),
-        normalized);
+    return findDuplicate(normalized, null);
   }
 
   private void lockCandidateAdmission(String normalized) {
@@ -305,7 +276,8 @@ public class CandidateService {
       List<com.vibelex.candidatediscovery.api.CandidateController.VariantRequest> variants) {
     validateCandidate(term, definition);
     String normalized = normalizer.normalize(term, "zh-CN");
-    Long duplicateMemeId = findDuplicate(normalized);
+    lockCandidateAdmission(normalized);
+    ensureNoDuplicate(normalized, null);
     long id =
         database.insert(
             """
@@ -322,7 +294,7 @@ public class CandidateService {
             definition.trim(),
             blankToNull(sourceUrl),
             actorProvider.currentActor(),
-            duplicateMemeId,
+            null,
             editorNote(null, term, category, origin, examples, profanity, offense, variants));
     return detail(id);
   }
@@ -369,20 +341,20 @@ public class CandidateService {
     Map<String, Object> candidate = findCandidateForUpdate(candidateId);
     ensureEditable(candidate);
     String normalized = normalizer.normalize(term, "zh-CN");
-    Long duplicateMemeId = findDuplicate(normalized);
+    lockCandidateAdmission(normalized);
+    ensureNoDuplicate(normalized, candidateId);
     int changed =
         database.update(
             """
                 UPDATE candidate_entries
                 SET term_raw = ?, normalized_term = ?, definition_raw = ?,
-                    source_url = ?, duplicate_meme_id = ?, processing_note = ?
+                    duplicate_meme_id = ?, processing_note = ?
                 WHERE id = ? AND status IN ('editing', 'returned')
                 """,
             term.trim(),
             normalized,
             definition.trim(),
-            blankToNull(sourceUrl),
-            duplicateMemeId,
+            numberAsLong(candidate.get("duplicate_meme_id")),
             editorNote(
                 stringValue(candidate.get("processing_note")),
                 term,
@@ -405,13 +377,13 @@ public class CandidateService {
     ensureEditable(candidate);
     validateCandidate(
         stringValue(candidate.get("term_raw")), stringValue(candidate.get("definition_raw")));
-    Long duplicateMemeId = numberAsLong(candidate.get("duplicate_meme_id"));
+    Long lifecycleMemeId = lifecycleMemeId(candidate);
     Integer baseVersion =
-        duplicateMemeId == null
+        lifecycleMemeId == null
             ? null
             : numberAsInt(
                 database.scalar(
-                    "SELECT current_version FROM meme_entries WHERE id = ?", duplicateMemeId));
+                    "SELECT current_version FROM meme_entries WHERE id = ?", lifecycleMemeId));
     String actor = actorProvider.currentActor();
     database.update(
         """
@@ -492,11 +464,12 @@ public class CandidateService {
     if (!"pending_review".equals(candidate.get("status"))) {
       throw new IllegalStateException("只有审核中的候选词条可以批准");
     }
-    ObjectNode publishDocument = buildPublishDocument(candidate);
+    Long lifecycleMemeId = lifecycleMemeId(candidate);
+    ObjectNode publishDocument = buildPublishDocument(candidate, lifecycleMemeId);
     appendAiVariants(publishDocument, candidate);
     Map<String, Object> published =
         publishingService.publishCandidate(
-            numberAsLong(candidate.get("duplicate_meme_id")),
+            lifecycleMemeId,
             numberAsInt(candidate.get("review_base_version")),
             publishDocument,
             "候选词条审核发布: " + candidate.get("term_raw"),
@@ -643,14 +616,13 @@ public class CandidateService {
     }
   }
 
-  private ObjectNode buildPublishDocument(Map<String, Object> candidate) {
+  private ObjectNode buildPublishDocument(Map<String, Object> candidate, Long lifecycleMemeId) {
     String term = String.valueOf(candidate.get("term_raw"));
     String normalizedTerm = String.valueOf(candidate.get("normalized_term"));
     String definition = (String) candidate.get("definition_raw");
     JsonNode note = parseJson((String) candidate.get("processing_note"));
-    Long duplicateMemeId = numberAsLong(candidate.get("duplicate_meme_id"));
-    if (duplicateMemeId != null) {
-      ObjectNode snapshot = existingSnapshot(duplicateMemeId);
+    if (lifecycleMemeId != null) {
+      ObjectNode snapshot = existingSnapshot(lifecycleMemeId);
       ObjectNode entry = (ObjectNode) snapshot.path("meme_entry");
       updateEntry(entry, term, normalizedTerm, note);
       ArrayNode senses = snapshot.withArray("senses");
@@ -1088,11 +1060,60 @@ public class CandidateService {
     return ids;
   }
 
-  private Long findDuplicate(String normalizedTerm) {
-    return numberAsLong(
-        database.scalar(
-            "SELECT id FROM meme_entries WHERE normalized_term = ? AND language_code = 'zh-CN' LIMIT 1",
-            normalizedTerm));
+  private void ensureNoDuplicate(String normalizedTerm, Long candidateIdToExclude) {
+    CrawlerImportResult duplicate = findDuplicate(normalizedTerm, candidateIdToExclude);
+    if (duplicate == null) return;
+    throw new IllegalArgumentException(
+        "候选词形已存在，重复目标："
+            + duplicate.duplicateTargetType()
+            + "#"
+            + duplicate.duplicateTargetId());
+  }
+
+  private CrawlerImportResult findDuplicate(String normalizedTerm, Long candidateIdToExclude) {
+    String candidateClause =
+        candidateIdToExclude == null ? "" : " AND id <> " + candidateIdToExclude;
+    Map<String, Object> duplicate =
+        database.optionalOne(
+            """
+            SELECT target_type, target_id
+            FROM (
+                SELECT 'meme' AS target_type, id AS target_id, 1 AS match_priority
+                FROM meme_entries
+                WHERE normalized_term = ? AND language_code = 'zh-CN' AND status = 'published'
+                UNION ALL
+                SELECT 'variant' AS target_type, v.meme_id AS target_id, 2 AS match_priority
+                FROM meme_variants v
+                JOIN meme_entries e ON e.id = v.meme_id
+                WHERE v.normalized_variant = ? AND v.status = 'active' AND e.status = 'published'
+                UNION ALL
+                SELECT 'candidate' AS target_type, id AS target_id, 3 AS match_priority
+                FROM candidate_entries
+                WHERE normalized_term = ? AND status IN ('editing', 'pending_review', 'returned')
+            """
+                + candidateClause
+                + """
+            ) duplicate_matches
+            ORDER BY match_priority
+            LIMIT 1
+            """,
+            normalizedTerm,
+            normalizedTerm,
+            normalizedTerm);
+    if (duplicate == null || !duplicate.containsKey("target_type")) return null;
+    return new CrawlerImportResult(
+        "duplicate",
+        null,
+        String.valueOf(duplicate.get("target_type")),
+        numberAsLong(duplicate.get("target_id")),
+        normalizedTerm);
+  }
+
+  private Long lifecycleMemeId(Map<String, Object> candidate) {
+    Long publishedMemeId = numberAsLong(candidate.get("published_meme_id"));
+    return publishedMemeId != null
+        ? publishedMemeId
+        : numberAsLong(candidate.get("duplicate_meme_id"));
   }
 
   private String category(String type) {

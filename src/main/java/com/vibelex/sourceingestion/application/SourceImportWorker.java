@@ -422,15 +422,16 @@ public class SourceImportWorker {
             FROM (
                 SELECT 'meme' AS target_type, id AS target_id, 1 AS match_priority
                 FROM meme_entries
-                WHERE normalized_term=? AND language_code='zh-CN'
+                WHERE normalized_term=? AND language_code='zh-CN' AND status='published'
                 UNION ALL
-                SELECT 'variant' AS target_type, meme_id AS target_id, 2 AS match_priority
-                FROM meme_variants
-                WHERE normalized_variant=? AND status='active'
+                SELECT 'variant' AS target_type, v.meme_id AS target_id, 2 AS match_priority
+                FROM meme_variants v
+                JOIN meme_entries e ON e.id=v.meme_id
+                WHERE v.normalized_variant=? AND v.status='active' AND e.status='published'
                 UNION ALL
                 SELECT 'candidate' AS target_type, id AS target_id, 3 AS match_priority
                 FROM candidate_entries
-                WHERE normalized_term=?
+                WHERE normalized_term=? AND status IN ('editing', 'pending_review', 'returned')
             ) duplicate_matches
             ORDER BY match_priority
             LIMIT 1

@@ -54,7 +54,6 @@ const ENUM_LABELS = {
   pending_review: "审核中",
   returned: "已退回",
   published: "已发布",
-  archived: "已归档",
   manual: "人工录入",
   import: "文件导入",
   none: "无风险",
@@ -128,7 +127,6 @@ const ENUM_LABELS = {
   converted: "已转换",
   merged: "已合并",
   inactive: "已停用",
-  disabled: "已禁用",
   "zh-CN": "简体中文",
 };
 
@@ -756,6 +754,7 @@ async function openCandidateEditor(candidateId = null) {
     find("#candidate-editor-form").reset();
     candidateEditorVariants = [];
     candidateEditorExamples = [];
+    find("#candidate-source-url").disabled = Boolean(candidateId);
     find("#candidate-editor-import-provenance").hidden = true;
     find("#candidate-editor-id").value = candidateId || "";
     find("#candidate-editor-title").textContent = candidateId ? "编辑候选词条" : "新增候选词条";
@@ -1088,7 +1087,6 @@ async function loadEntries(page = entryState.page) {
   const params = new URLSearchParams({
     q: find("#entry-query").value.trim(),
     source: find("#entry-source").value.trim(),
-    status: find("#entry-status").value,
     riskLevel: find("#entry-risk").value,
     size: entryState.size,
     page: entryState.page,
@@ -1111,7 +1109,6 @@ async function loadEntries(page = entryState.page) {
       ["分类", (row) => escapeHtml(enumLabel(row.category))],
       ["风险等级", (row) => statusBadge(row.risk_level)],
       ["当前版本", (row) => `V${row.current_version}`],
-      ["发布状态", (row) => statusBadge(row.status)],
     ],
     (row) => `<button class="table-action" data-entry-detail="${row.id}">查看详情</button>${row.status === "published" ? `<button class="table-action danger-action" data-entry-withdraw="${row.id}">撤回</button>` : ""}`,
   );
@@ -1906,7 +1903,6 @@ find("#entry-invert-selection").addEventListener("click", () => {
   updateEntrySelection();
 });
 find("#entry-batch-withdraw").addEventListener("click", () => withdrawEntries(selectedEntryIds()));
-find("#entry-status").addEventListener("change", () => loadEntries(1));
 find("#entry-risk").addEventListener("change", () => loadEntries(1));
 find("#entry-query").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {

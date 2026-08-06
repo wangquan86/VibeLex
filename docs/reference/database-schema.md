@@ -253,7 +253,7 @@ CREATE TABLE meme_entries (
 
     heat_score DECIMAL(5,2) NULL COMMENT '内部热度评分，建议范围为 0 至 100；暂未计算时可为空',
 
-    status VARCHAR(32) NOT NULL DEFAULT 'published' COMMENT '正式词条状态：published、disabled、archived',
+    status VARCHAR(32) NOT NULL DEFAULT 'published' COMMENT '正式词条状态：published；archived 仅用于内部历史审计',
 
     current_version INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '当前快照版本号；首次正式发布和每次重要变更或回滚后递增',
 
@@ -300,8 +300,8 @@ CREATE TABLE meme_entries (
 | `origin_summary` | VARCHAR(1000) | 否 | 起源摘要 |
 | `trend_status` | VARCHAR(32) | 是 | 预留的趋势变化状态；不承担词条生命周期 |
 | `heat_score` | DECIMAL(5,2) | 否 | 0 至 100 的内部热度分 |
-| `status` | VARCHAR(32) | 是 | 草稿、审核、发布、归档等状态 |
-| `current_version` | INT UNSIGNED | 是 | 当前快照版本号；草稿初始为 0 |
+| `status` | VARCHAR(32) | 是 | `published` 或仅用于内部历史审计的 `archived` |
+| `current_version` | INT UNSIGNED | 是 | 当前快照版本号；正式词条首次发布为 1，撤回和后续变更递增 |
 | `created_by` | VARCHAR(128) | 否 | 创建者标识 |
 | `reviewed_by` | VARCHAR(128) | 否 | 最后审核者标识 |
 | `created_at` | DATETIME(3) | 是 | 创建时间 |
@@ -1088,11 +1088,10 @@ declining    热度下降
 
 ```text
 published       已发布
-disabled        暂停使用
-archived        历史归档
+archived        内部历史归档，不参与任何业务查询
 ```
 
-候选的编辑中、审核中和已退回状态属于 `candidate_entries`；正式词条表只保存批准后的生效内容。候选池不维护版本快照，正式词条的重要发布仍写入 `meme_revisions`。
+候选的编辑中、审核中和已退回状态属于 `candidate_entries`；正式词条表保存当前生效内容及内部历史身份。候选池不维护版本快照，正式词条的发布、撤回和重新发布均写入 `meme_revisions`。
 
 ---
 
@@ -1282,25 +1281,26 @@ editing
 pending_review
   ├── 批准 → published
   └── 退回 → returned → 编辑后重新提交
+published
+  └── 正式词条撤回 → editing（复用原候选并保留来源）
 ```
 
 正式词条状态流转：
 
 ```text
 published
-  ├── disabled
-  └── archived
+  └── 撤回 → archived（仅内部历史审计）
+                  └── 原候选重新发布 → published
 ```
 
-正式词条一经创建便禁止硬删除。下线使用 `disabled`，历史保留使用 `archived`；服务层不提供正式词条 DELETE API，数据库外键使用 `RESTRICT` 防止义项、证据和版本历史被级联删除。候选清理策略不属于当前 V1 页面能力，后续按实际数据治理需求确定。
+正式词条一经创建便禁止硬删除。下线统一通过“撤回至候选”完成，正式词条内部转为 `archived`，原候选恢复为 `editing`；`disabled` 正式状态已经废弃。服务层不提供正式词条 DELETE API，数据库外键使用 `RESTRICT` 防止义项、证据和版本历史被级联删除。
 
 正式词条说明：
 
 | 状态 | 是否默认检索 | 是否参与识别 | 是否允许推荐 |
 |---|---:|---:|---:|
 | `published` | 是 | 是 | 根据风险策略决定 |
-| `disabled` | 否 | 默认否 | 否 |
-| `archived` | 可选 | 可用于历史内容识别 | 否 |
+| `archived` | 否 | 否 | 否 |
 
 ---
 
@@ -1311,14 +1311,15 @@ published
 V1 按以下顺序处理：
 
 ```text
-1. 人工录入或文件导入创建 candidate_entries.editing；
-2. 编辑直接修改候选内容；
+1. 人工录入、文件导入或网站爬取使用同一套归一化词形判重，重复内容不创建候选；
+2. 创建 candidate_entries.editing，来源字段在后续人工编辑、审核、发布和撤回中保持不变；
 3. 提交时将候选改为 pending_review，并记录提交人与基础正式版本；
 4. 审核期间禁止修改候选；
 5. 批准后在同一事务中创建或更新 meme_entries 及其子表；
 6. 生成新的 meme_revisions 正式版本；
 7. 将候选改为 published，并写入 published_meme_id；
 8. 退回时将候选改为 returned，记录审核意见并恢复编辑权限。
+9. 正式词条撤回时将原候选从 published 恢复为 editing，不创建新的人工候选；重新发布固定更新 published_meme_id 指向的原正式词条。
 ```
 
 候选发布流程不创建 `entry_change_sets`。正式词条后续独立变更仍可使用保留的通用 change set 能力。

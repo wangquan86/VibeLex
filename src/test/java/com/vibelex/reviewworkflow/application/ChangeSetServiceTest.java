@@ -71,4 +71,13 @@ class ChangeSetServiceTest {
         .hasMessageContaining("必须填写审核意见");
     verifyNoInteractions(database);
   }
+
+  @Test
+  void rejectsUpdateChangeSetWhenFormalEntryIsNotPublished() {
+    when(database.scalar(anyString(), any(Object[].class))).thenReturn(null);
+
+    assertThatThrownBy(() -> service.create(4473L, "update", 1, null, "hidden entry"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("正式词条不存在");
+  }
 }

@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -120,11 +121,32 @@ class CandidateServiceTest {
             mock(ChangeSetService.class),
             mock(AiVariantGenerator.class));
 
-    service.update(1L, "破防", "情绪受到触动", "other", "人工改写的起源", List.of(), false, false, null);
+    service.update(
+        1L,
+        "破防",
+        "情绪受到触动",
+        "other",
+        "人工改写的起源",
+        List.of(),
+        false,
+        false,
+        "https://editor.example/new-source");
 
     ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
-    verify(database).update(anyString(), arguments.capture());
-    JsonNode note = mapper.readTree(String.valueOf(arguments.getValue()[5]));
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(database, times(2)).update(sql.capture(), arguments.capture());
+    String candidateUpdate =
+        sql.getAllValues().stream()
+            .filter(statement -> statement.contains("UPDATE candidate_entries"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(candidateUpdate).doesNotContain("source_url =");
+    Object[] updateArguments =
+        arguments.getAllValues().stream()
+            .filter(values -> values.length > 4 && String.valueOf(values[4]).contains("origin"))
+            .findFirst()
+            .orElseThrow();
+    JsonNode note = mapper.readTree(String.valueOf(updateArguments[4]));
     assertThat(note.path("origin").asText()).isEqualTo("人工改写的起源");
     assertThat(note.has("origin_references")).isFalse();
   }
@@ -223,6 +245,30 @@ class CandidateServiceTest {
     assertThat(note.path("origin").asText()).isEqualTo("起源说明");
     assertThat(note.path("origin_references").get(0).path("url").asText())
         .isEqualTo("https://example.test/origin");
+  }
+
+  @Test
+  void rejectsManualCandidateWhenNormalizedTermAlreadyExists() {
+    TermNormalizer normalizer = mock(TermNormalizer.class);
+    when(normalizer.normalize("重复词", "zh-CN")).thenReturn("重复词");
+    when(database.optionalOne(anyString(), any(Object[].class)))
+        .thenReturn(Map.of("target_type", "meme", "target_id", 7L));
+    service =
+        new CandidateService(
+            database,
+            new ObjectMapper(),
+            actor,
+            normalizer,
+            mock(ChangeSetService.class),
+            mock(AiVariantGenerator.class));
+
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    "重复词", "释义", "other", "", List.of(), false, false, null, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("候选词形已存在");
+    verify(database, never()).insert(anyString(), any(Object[].class));
   }
 
   @Test

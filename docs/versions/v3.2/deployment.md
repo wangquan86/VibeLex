@@ -4,13 +4,14 @@ V3.2 包含不可原地修改的 Elasticsearch strict mapping 变更，发布顺
 
 1. 保持 `VIBELEX_RECOMMENDATION_V3_ENABLED=false`，备份数据库并部署 `vibelex-3.2.0.jar`。
 2. 启动应用，让 Flyway 执行 V12；确认三个冗余策略字段已删除。
-3. 在管理页面“共享义项索引”执行全量重建，或调用 `POST /api/admin/search/index/rebuild`。接口会立即创建重建任务并返回 `id`，应用按增量任务 worker 分批写入带时间戳的新物理索引；通过 `GET /api/admin/search/index/rebuild/{id}` 查询进度，全部成功后原子切换 `vibelex_sense_current`。
+3. 对升级前的既有数据库执行一次 `deploy/maintenance/v3.2-entry-lifecycle-cleanup.sql`。该脚本不属于 Flyway，仅接受发布前已审计的数据形态；任一断言不满足时必须停止并重新核查，禁止删改断言后强行执行。
+4. 在管理页面“共享义项索引”执行全量重建，或调用 `POST /api/admin/search/index/rebuild`。接口会立即创建重建任务并返回 `id`，应用按增量任务 worker 分批写入带时间戳的新物理索引；通过 `GET /api/admin/search/index/rebuild/{id}` 查询进度，全部成功后原子切换 `vibelex_sense_current`。
    全量任务处于 `preparing` 或 `running` 时，增量同步仍正常入队但暂停消费；别名切换成功或全量失败后自动恢复消费，积压任务会写入当时生效的索引别名。
-4. 检查重建报告中的 `cleanupFailures`。别名切换成功后，应用立即删除切换前由该别名指向的旧物理索引；删除失败的索引会保留并在报告中列出，必须人工确认后清理。没有挂在当前别名下的孤立索引不会自动删除。
-5. 验证索引文档只包含正式词条的 active 义项，向量维度与 embedding 服务配置一致。
-6. 回归 `POST /api/v2/recognitions`：已发布和已归档词条仍可识别，纯语义候选仍须锚定原文。
-7. 部署并启动 `deploy/reranker` 中的 CPU Reranker，确认 `GET http://10.145.12.11:8082/health` 返回 `status=ok`。
-8. 设置 `VIBELEX_RECOMMENDATION_V3_ENABLED=true`、`VIBELEX_RERANKER_ENABLED=true` 并重启应用，再验证 V3 正常结果、重排序结果、空结果、400、413 和 503 契约。
+5. 检查重建报告中的 `cleanupFailures`。别名切换成功后，应用立即删除切换前由该别名指向的旧物理索引；删除失败的索引会保留并在报告中列出，必须人工确认后清理。没有挂在当前别名下的孤立索引不会自动删除。
+6. 验证索引文档只包含已发布正式词条的 active 义项，归档词条文档数为 0，向量维度与 embedding 服务配置一致。
+7. 回归 `POST /api/v2/recognitions`：已发布词条可识别，内部归档词条不可识别，纯语义候选仍须锚定原文。
+8. 部署并启动 `deploy/reranker` 中的 CPU Reranker，确认 `GET http://10.145.12.11:8082/health` 返回 `status=ok`。
+9. 设置 `VIBELEX_RECOMMENDATION_V3_ENABLED=true`、`VIBELEX_RERANKER_ENABLED=true` 并重启应用，再验证 V3 正常结果、重排序结果、空结果、400、413 和 503 契约。
 
 增量同步任务会检查别名指向索引的 mapping 元数据。全量重建完成前，任务不会向 V2 旧 mapping 写入新结构，也不会被误标为成功；任务会按现有退避规则重试，并可在管理页面重新入队。
 

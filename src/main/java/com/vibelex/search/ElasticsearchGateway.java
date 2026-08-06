@@ -260,7 +260,7 @@ public class ElasticsearchGateway {
 
   private List<Map<String, Object>> formalChineseFilters() {
     return List.of(
-        Map.of("terms", Map.of("entry_status", List.of("published", "archived"))),
+        Map.of("term", Map.of("entry_status", "published")),
         Map.of("term", Map.of("language_code", "zh-CN")));
   }
 

@@ -32,13 +32,12 @@ public class EntryAdminController {
 
   @GetMapping
   public Map<String, Object> list(
-      @RequestParam(defaultValue = "published") String status,
       @RequestParam(defaultValue = "all") String riskLevel,
       @RequestParam(defaultValue = "") String q,
       @RequestParam(defaultValue = "") String source,
       @RequestParam(defaultValue = "1") int page,
       @RequestParam(defaultValue = "20") int size) {
-    return service.list(status, riskLevel, q, source, page, size);
+    return service.list("published", riskLevel, q, source, page, size);
   }
 
   @GetMapping("/{id}")

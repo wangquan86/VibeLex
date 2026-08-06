@@ -65,7 +65,7 @@ public class RecognitionIndex {
                        p.moderation_policy
                 FROM meme_entries e
                 JOIN meme_safety_policies p ON p.meme_id = e.id
-                WHERE e.status IN ('published', 'archived')
+                WHERE e.status = 'published'
                 """)
         .forEach(
             row -> {

@@ -44,7 +44,7 @@ public class SearchIndexService {
     List<Long> entriesWithoutActiveSense = new ArrayList<>();
     try {
       for (Map<String, Object> row :
-          database.list("SELECT id FROM meme_entries WHERE status IN ('published', 'archived')")) {
+          database.list("SELECT id FROM meme_entries WHERE status = 'published'")) {
         long memeId = ((Number) row.get("id")).longValue();
         int written = syncMeme(memeId, next, false);
         documents += written;
@@ -159,7 +159,7 @@ public class SearchIndexService {
             """
             SELECT id, meme_code, canonical_term, language_code, status, category, domain_tags
             FROM meme_entries
-            WHERE id=? AND status IN ('published', 'archived')
+            WHERE id=? AND status = 'published'
             """,
             memeId);
     if (entry == null) return 0;

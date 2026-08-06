@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class EntryAdminQueryService {
 
-  private static final Set<String> SUPPORTED_STATUSES = Set.of("published", "archived", "all");
+  private static final Set<String> SUPPORTED_STATUSES = Set.of("published", "all");
   private static final Set<String> SUPPORTED_RISK_LEVELS =
       Set.of("none", "low", "medium", "high", "restricted", "all");
 
@@ -43,10 +43,7 @@ public class EntryAdminQueryService {
 
     StringBuilder where = new StringBuilder(" WHERE 1 = 1");
     List<Object> filterArgs = new ArrayList<>();
-    if (!"all".equals(selectedStatus)) {
-      where.append(" AND e.status = ?");
-      filterArgs.add(selectedStatus);
-    }
+    where.append(" AND e.status = 'published'");
     if (!"all".equals(selectedRiskLevel)) {
       where.append(" AND p.risk_level = ?");
       filterArgs.add(selectedRiskLevel);
@@ -114,6 +111,10 @@ public class EntryAdminQueryService {
   }
 
   public Map<String, Object> detail(long entryId) {
+    Object status = database.scalar("SELECT status FROM meme_entries WHERE id = ?", entryId);
+    if (!"published".equals(status)) {
+      throw new IllegalArgumentException("正式词条不存在");
+    }
     Map<String, Object> result = new LinkedHashMap<>();
     result.put("snapshot", snapshots.snapshot(entryId));
     result.put(

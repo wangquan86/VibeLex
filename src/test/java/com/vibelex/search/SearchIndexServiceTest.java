@@ -42,45 +42,14 @@ class SearchIndexServiceTest {
   }
 
   @Test
-  void indexesArchivedActiveSenseWithSharedDocumentContract() {
-    when(database.optionalOne(anyString(), any(Object[].class)))
-        .thenReturn(
-            Map.of(
-                "id", 101L,
-                "meme_code", "MEME_000101",
-                "canonical_term", "破防",
-                "language_code", "zh-CN",
-                "status", "archived",
-                "category", "emotion_expression",
-                "domain_tags", "[\"情绪表达\"]"));
-    when(database.list(anyString(), any(Object[].class)))
-        .thenAnswer(
-            invocation -> {
-              String sql = invocation.getArgument(0);
-              if (sql.contains("FROM meme_senses"))
-                return List.of(Map.of("id", 201L, "sense_no", 1, "definition", "受到冲击。"));
-              if (sql.contains("FROM meme_variants")) return List.of(Map.of("variant", "我破防了"));
-              if (sql.contains("FROM meme_examples"))
-                return List.of(Map.of("example_text", "看到结局我破防了。"));
-              return List.of();
-            });
+  void doesNotIndexArchivedActiveSense() {
+    when(database.optionalOne(anyString(), any(Object[].class))).thenReturn(null);
 
     service.syncMeme(101L);
 
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<Map<String, Object>> document = ArgumentCaptor.forClass(Map.class);
     verify(es).deleteByMeme("vibelex_sense_current", 101L);
-    verify(es).upsert(eq("vibelex_sense_current"), eq("meme-101-sense-201"), document.capture());
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<String> embeddingText = ArgumentCaptor.forClass(String.class);
-    verify(embedding).embed(embeddingText.capture());
-    assertThat(document.getValue())
-        .containsEntry("entry_status", "archived")
-        .containsEntry("sense_id", 201L)
-        .containsEntry("examples", List.of("看到结局我破防了。"))
-        .doesNotContainKeys(
-            "detect_enabled", "generate_enabled", "recommend_enabled", "scenes", "indexed_at");
-    assertThat(embeddingText.getValue()).doesNotContain("鐪嬪埌缁撳眬鎴戠牬闃蹭簡銆?");
+    verify(es, never()).upsert(anyString(), anyString(), any());
+    verify(embedding, never()).embed(anyString());
   }
 
   @Test

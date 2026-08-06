@@ -23,6 +23,7 @@ public class RevisionController {
 
   @GetMapping
   public List<Map<String, Object>> list(@PathVariable long memeId) {
+    ensurePublished(memeId);
     return database.list(
         """
         SELECT id, meme_id, version, change_type, change_summary,
@@ -36,6 +37,7 @@ public class RevisionController {
 
   @GetMapping("/{version}")
   public Map<String, Object> get(@PathVariable long memeId, @PathVariable int version) {
+    ensurePublished(memeId);
     return database.one(
         "SELECT * FROM meme_revisions WHERE meme_id=? AND version=?", memeId, version);
   }
@@ -61,10 +63,12 @@ public class RevisionController {
       @PathVariable long memeId,
       @PathVariable int version,
       @RequestBody(required = false) Map<String, String> body) {
+    ensurePublished(memeId);
     return changes.rollback(memeId, version, body == null ? null : body.get("summary"));
   }
 
   private JsonNode snapshot(long id, int v) {
+    ensurePublished(id);
     Object value =
         database.scalar("SELECT snapshot FROM meme_revisions WHERE meme_id=? AND version=?", id, v);
     if (value == null) throw new IllegalArgumentException("版本不存在");
@@ -73,5 +77,10 @@ public class RevisionController {
     } catch (Exception e) {
       throw new IllegalStateException("版本快照无效", e);
     }
+  }
+
+  private void ensurePublished(long memeId) {
+    Object status = database.scalar("SELECT status FROM meme_entries WHERE id=?", memeId);
+    if (!"published".equals(status)) throw new IllegalArgumentException("正式词条不存在");
   }
 }

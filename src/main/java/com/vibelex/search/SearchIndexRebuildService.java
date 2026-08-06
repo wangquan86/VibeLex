@@ -122,7 +122,7 @@ public class SearchIndexRebuildService {
         if (!es.indexExists(target)) es.createIndex(target);
         List<Map<String, Object>> memes =
             database.list(
-                "SELECT id FROM meme_entries WHERE status IN ('published', 'archived') ORDER BY id");
+                "SELECT id FROM meme_entries WHERE status = 'published' ORDER BY id");
         transactions.executeWithoutResult(
             ignored -> {
               Map<String, Object> locked =
